@@ -38,7 +38,8 @@ struct Args {
 enum EventWrapper {
     ScanStart(usize), // Total processes
     ScanProgress(usize, String), // Current count, current scanning name
-    ScanComplete(Vec<ProcessMemory>),
+    ScanResult(ProcessMemory), // Incremental result
+    ScanComplete, // Done
 }
 
 fn main() -> Result<()> {
@@ -156,6 +157,10 @@ fn run_tui() -> Result<()> {
                     KeyCode::Char('r') => {
                         if !app.is_loading {
                             app.is_loading = true;
+                            app.processes.clear(); // Clear existing list on refresh
+                            app.total_swap = 0;
+                            app.total_compressed = 0;
+                            app.total_phys = 0;
                             let tx_scan = tx.clone();
                             thread::spawn(move || {
                                 perform_scan(tx_scan);
@@ -220,11 +225,18 @@ fn run_tui() -> Result<()> {
                     }
                     app.current_scanning = Some(name);
                 }
-                EventWrapper::ScanComplete(data) => {
-                    app.set_processes(data);
+                EventWrapper::ScanResult(process) => {
+                    app.add_process(process);
+                }
+                EventWrapper::ScanComplete => {
                     app.is_loading = false;
                     app.scan_progress = None;
                     app.current_scanning = None;
+                    // Final sort to be sure
+                    app.sort();
+                    if app.state.selected().is_none() && !app.processes.is_empty() {
+                        app.state.select(Some(0));
+                    }
                 }
             }
         }
@@ -265,25 +277,21 @@ fn perform_scan(tx: mpsc::Sender<EventWrapper>) {
     let counter = Arc::new(AtomicUsize::new(0));
 
     // Use rayon to parallelize vmmap calls
-    let results: Vec<ProcessMemory> = pids
+    pids
         .par_iter()
-        .map(|(pid, name)| {
+        .for_each(|(pid, name)| {
             let current = counter.fetch_add(1, Ordering::Relaxed) + 1;
             // Send progress update periodically or every time?
             // Every time might overwhelm the channel/UI thread, let's try every 1 or 5.
             // For smoother UI, every 1 is fine if main loop drains quickly.
             let _ = tx.send(EventWrapper::ScanProgress(current, name.clone()));
 
-            get_process_memory(*pid, name).unwrap_or_else(|_| ProcessMemory {
-                pid: *pid,
-                name: name.clone(),
-                physical_footprint: 0,
-                compressed: 0,
-                swap_used: 0,
-            })
-        })
-        .filter(|p| p.total() > 0) // Filter out empty/failed ones
-        .collect();
+            if let Ok(mem) = get_process_memory(*pid, name) {
+                if mem.total() > 0 {
+                    let _ = tx.send(EventWrapper::ScanResult(mem));
+                }
+            }
+        });
 
-    let _ = tx.send(EventWrapper::ScanComplete(results));
+    let _ = tx.send(EventWrapper::ScanComplete);
 }

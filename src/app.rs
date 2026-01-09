@@ -100,15 +100,21 @@ impl App {
         });
     }
 
-    pub fn set_processes(&mut self, processes: Vec<ProcessMemory>) {
-        self.processes = processes;
-        self.total_swap = self.processes.iter().map(|p| p.swap_used).sum();
-        self.total_compressed = self.processes.iter().map(|p| p.compressed).sum();
-        self.total_phys = self.processes.iter().map(|p| p.physical_footprint).sum();
+
+
+    pub fn add_process(&mut self, process: ProcessMemory) {
+        self.total_swap += process.swap_used;
+        self.total_compressed += process.compressed;
+        self.total_phys += process.physical_footprint;
+        self.processes.push(process);
+        // Maybe sort every time? Or just every N times?
+        // Sorting every time might be too jumpy for UI if user is scrolling.
+        // But user asked for "incremental updates", so maybe we should.
+        // Let's sort but try to keep selection stable if possible (though tough with inserts)
+        // For now, let's just append and update totals, only sort at end or if user asks?
+        // Actually, if we don't sort, the list is random.
+        // Let's sort.
         self.sort();
-        if self.state.selected().is_none() && !self.processes.is_empty() {
-            self.state.select(Some(0));
-        }
     }
 
     pub fn kill_selected(&mut self) {
