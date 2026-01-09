@@ -1,11 +1,13 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table},
     Frame,
 };
 use crate::app::App;
 use bytesize::ByteSize;
+
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -61,6 +63,58 @@ fn render_table(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_status(f: &mut Frame, app: &mut App, area: Rect) {
+    if app.is_loading {
+        render_loading_status(f, app, area);
+    } else {
+        render_idle_status(f, app, area);
+    }
+}
+
+fn render_loading_status(f: &mut Frame, app: &mut App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(70),
+            Constraint::Percentage(30),
+        ])
+        .split(area);
+
+    // Render Gauge
+    if let Some((current, total)) = app.scan_progress {
+        let percent = if total > 0 {
+            ((current as f64 / total as f64) * 100.0) as u16
+        } else {
+            0
+        };
+        
+        let label = if let Some(name) = &app.current_scanning {
+            format!("Scanning {}/{} - {}", current, total, name)
+        } else {
+            format!("Scanning {}/{}", current, total)
+        };
+
+        let gauge = Gauge::default()
+            .block(Block::default().borders(Borders::ALL).title("Progress"))
+            .gauge_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC))
+            .percent(percent)
+            .label(label);
+        
+        f.render_widget(gauge, chunks[0]);
+    } else {
+         let p = Paragraph::new("Initializing scan...")
+            .block(Block::default().borders(Borders::ALL).title("Progress"));
+        f.render_widget(p, chunks[0]);
+    }
+
+    // Render Spinner
+    let spinner_char = SPINNER[app.spinner_idx % SPINNER.len()];
+    let p = Paragraph::new(format!("{} Scanning...", spinner_char))
+        .style(Style::default().fg(Color::Yellow))
+        .block(Block::default().borders(Borders::ALL).title("Status"));
+    f.render_widget(p, chunks[1]);
+}
+
+fn render_idle_status(f: &mut Frame, app: &mut App, area: Rect) {
     let summary = format!(
         "Total Swap: {} | Total Comp: {} | Total Phys: {}",
         ByteSize(app.total_swap),
@@ -68,11 +122,7 @@ fn render_status(f: &mut Frame, app: &mut App, area: Rect) {
         ByteSize(app.total_phys)
     );
 
-    let status = if app.is_loading {
-        format!("Scanning... | {}", summary)
-    } else {
-        format!("{} | 'r': Refresh | 'q': Quit | 's': Swap | 't': Total | 'x': Kill", summary)
-    };
+    let status = format!("{} | 'r': Refresh | 'q': Quit | 's': Swap | 't': Total | 'x': Kill", summary);
 
     let p = Paragraph::new(status)
         .style(Style::default().fg(Color::White))

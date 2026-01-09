@@ -36,6 +36,8 @@ struct Args {
 }
 
 enum EventWrapper {
+    ScanStart(usize), // Total processes
+    ScanProgress(usize, String), // Current count, current scanning name
     ScanComplete(Vec<ProcessMemory>),
 }
 
@@ -53,7 +55,31 @@ fn main() -> Result<()> {
 
 fn run_cli(args: Args) -> Result<()> {
     println!("Scanning processes... This may take a while.");
-    let mut processes = scan_processes();
+    
+    // For CLI, we need a simple blocking scan, but maybe re-use logic?
+    // Let's just inline a simple scan here since perform_scan is async/channel based.
+    let mut sys = System::new_all();
+    sys.refresh_all();
+    let pids: Vec<(i32, String)> = sys.processes()
+        .iter()
+        .map(|(pid, process)| (pid.as_u32() as i32, process.name().to_string()))
+        .collect();
+
+    println!("Found {} processes. Starting scan...", pids.len());
+
+    let mut processes: Vec<ProcessMemory> = pids
+        .par_iter()
+        .map(|(pid, name)| {
+            get_process_memory(*pid, name).unwrap_or_else(|_| ProcessMemory {
+                pid: *pid,
+                name: name.clone(),
+                physical_footprint: 0,
+                compressed: 0,
+                swap_used: 0,
+            })
+        })
+        .filter(|p| p.total() > 0)
+        .collect();
 
     // Sort
     match args.sort.as_str() {
@@ -107,12 +133,11 @@ fn run_tui() -> Result<()> {
 
     // Start initial scan in background
     thread::spawn(move || {
-        let results = scan_processes();
-        let _ = tx_scan.send(EventWrapper::ScanComplete(results));
+        perform_scan(tx_scan);
     });
     app.is_loading = true;
 
-    let tick_rate = Duration::from_millis(250);
+    let tick_rate = Duration::from_millis(100); // Faster tick for smooth animation
     let mut last_tick = Instant::now();
 
     loop {
@@ -133,8 +158,7 @@ fn run_tui() -> Result<()> {
                             app.is_loading = true;
                             let tx_scan = tx.clone();
                             thread::spawn(move || {
-                                let results = scan_processes();
-                                let _ = tx_scan.send(EventWrapper::ScanComplete(results));
+                                perform_scan(tx_scan);
                             });
                         }
                     }
@@ -186,9 +210,21 @@ fn run_tui() -> Result<()> {
         // Check for scan results
         if let Ok(results) = rx.try_recv() {
             match results {
+                EventWrapper::ScanStart(total) => {
+                    app.scan_progress = Some((0, total));
+                    app.current_scanning = None;
+                }
+                EventWrapper::ScanProgress(current, name) => {
+                    if let Some((_, total)) = app.scan_progress {
+                        app.scan_progress = Some((current, total));
+                    }
+                    app.current_scanning = Some(name);
+                }
                 EventWrapper::ScanComplete(data) => {
                     app.set_processes(data);
                     app.is_loading = false;
+                    app.scan_progress = None;
+                    app.current_scanning = None;
                 }
             }
         }
@@ -210,7 +246,10 @@ fn run_tui() -> Result<()> {
     Ok(())
 }
 
-fn scan_processes() -> Vec<ProcessMemory> {
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+fn perform_scan(tx: mpsc::Sender<EventWrapper>) {
     let mut sys = System::new_all();
     sys.refresh_all();
 
@@ -220,10 +259,21 @@ fn scan_processes() -> Vec<ProcessMemory> {
         .map(|(pid, process)| (pid.as_u32() as i32, process.name().to_string()))
         .collect();
 
+    let total = pids.len();
+    let _ = tx.send(EventWrapper::ScanStart(total));
+
+    let counter = Arc::new(AtomicUsize::new(0));
+
     // Use rayon to parallelize vmmap calls
-    pids
+    let results: Vec<ProcessMemory> = pids
         .par_iter()
         .map(|(pid, name)| {
+            let current = counter.fetch_add(1, Ordering::Relaxed) + 1;
+            // Send progress update periodically or every time?
+            // Every time might overwhelm the channel/UI thread, let's try every 1 or 5.
+            // For smoother UI, every 1 is fine if main loop drains quickly.
+            let _ = tx.send(EventWrapper::ScanProgress(current, name.clone()));
+
             get_process_memory(*pid, name).unwrap_or_else(|_| ProcessMemory {
                 pid: *pid,
                 name: name.clone(),
@@ -233,5 +283,7 @@ fn scan_processes() -> Vec<ProcessMemory> {
             })
         })
         .filter(|p| p.total() > 0) // Filter out empty/failed ones
-        .collect()
+        .collect();
+
+    let _ = tx.send(EventWrapper::ScanComplete(results));
 }

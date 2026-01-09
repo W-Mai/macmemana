@@ -18,6 +18,9 @@ pub struct App {
     pub sort_column: SortColumn,
     pub sort_desc: bool,
     pub is_loading: bool,
+    pub scan_progress: Option<(usize, usize)>, // (current, total)
+    pub current_scanning: Option<String>,
+    pub spinner_idx: usize,
     pub total_swap: u64,
     pub total_compressed: u64,
     pub total_phys: u64,
@@ -32,6 +35,9 @@ impl App {
             sort_column: SortColumn::Swap, // Default sort by Swap as requested
             sort_desc: true,
             is_loading: false,
+            scan_progress: None,
+            current_scanning: None,
+            spinner_idx: 0,
             total_swap: 0,
             total_compressed: 0,
             total_phys: 0,
@@ -39,7 +45,9 @@ impl App {
     }
 
     pub fn on_tick(&mut self) {
-        // Handle periodic updates if needed
+        if self.is_loading {
+            self.spinner_idx = (self.spinner_idx + 1) % 4; // 4 frames for basic spinner
+        }
     }
 
     pub fn quit(&mut self) {
