@@ -24,6 +24,7 @@ pub struct App {
     pub total_swap: u64,
     pub total_compressed: u64,
     pub total_phys: u64,
+    pub system_swap: String,
 }
 
 impl App {
@@ -41,6 +42,7 @@ impl App {
             total_swap: 0,
             total_compressed: 0,
             total_phys: 0,
+            system_swap: String::from("Unknown"),
         }
     }
 

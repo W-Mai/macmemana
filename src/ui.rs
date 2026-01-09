@@ -116,7 +116,8 @@ fn render_loading_status(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_idle_status(f: &mut Frame, app: &mut App, area: Rect) {
     let summary = format!(
-        "Total Swap: {} | Total Comp: {} | Total Phys: {}",
+        "System Swap: {} | Total Disk Swap: {} | Total Comp: {} | Total Phys: {}",
+        app.system_swap,
         ByteSize(app.total_swap),
         ByteSize(app.total_compressed),
         ByteSize(app.total_phys)

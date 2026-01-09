@@ -117,6 +117,28 @@ fn truncate(s: &str, max_width: usize) -> String {
     }
 }
 
+use std::process::Command;
+
+fn get_system_swap() -> Option<String> {
+    // sysctl vm.swapusage: vm.swapusage: total = 3072.00M  used = 1398.75M  free = 1673.25M  (encrypted)
+    let output = Command::new("sysctl")
+        .arg("vm.swapusage")
+        .output()
+        .ok()?;
+    
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Parse "used = X"
+        // Regex or simple split
+        if let Some(used_part) = stdout.split("used = ").nth(1) {
+             if let Some(val) = used_part.split_whitespace().next() {
+                 return Some(val.to_string());
+             }
+        }
+    }
+    None
+}
+
 fn run_tui() -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
@@ -137,6 +159,9 @@ fn run_tui() -> Result<()> {
         perform_scan(tx_scan);
     });
     app.is_loading = true;
+    if let Some(s) = get_system_swap() {
+        app.system_swap = s;
+    }
 
     let tick_rate = Duration::from_millis(100); // Faster tick for smooth animation
     let mut last_tick = Instant::now();
@@ -161,6 +186,9 @@ fn run_tui() -> Result<()> {
                             app.total_swap = 0;
                             app.total_compressed = 0;
                             app.total_phys = 0;
+                            if let Some(s) = get_system_swap() {
+                                app.system_swap = s;
+                            }
                             let tx_scan = tx.clone();
                             thread::spawn(move || {
                                 perform_scan(tx_scan);
