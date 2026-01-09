@@ -75,7 +75,6 @@ fn parse_vmmap_output(pid: i32, name: &str, output: &str) -> Result<ProcessMemor
     let mut phys = 0;
     let mut comp = 0;
     let mut swap = 0;
-    let mut resident_from_table = 0;
     let mut swap_from_table = 0;
     let mut found_total_table = false;
 
@@ -94,7 +93,6 @@ fn parse_vmmap_output(pid: i32, name: &str, output: &str) -> Result<ProcessMemor
         // Fallback: Parse table if explicit lines are missing
         if !found_total_table {
              if let Some(caps) = re_total_table.captures(line) {
-                 resident_from_table = parse_size(&caps[2]);
                  swap_from_table = parse_size(&caps[4]);
                  found_total_table = true;
              }
@@ -102,13 +100,45 @@ fn parse_vmmap_output(pid: i32, name: &str, output: &str) -> Result<ProcessMemor
     }
 
     // Apply fallbacks
-    if swap == 0 && swap_from_table > 0 {
-        swap = swap_from_table;
+    // If we have explicit swap line (from summary), use it.
+    // If NOT, we used to use swap_from_table. But we now know swap_from_table is Total Swapped (Comp + Disk).
+    // So we should NOT eagerly assign it to `swap` (which implies disk swap).
+    // We should let the logic below handle the split.
+    
+    // Estimate compressed if missing
+    // Heuristic:
+    // vmmap's "SWAPPED" column in the table (swap_from_table) roughly equals "VM Compressed" + "Swap Used" (Disk).
+    // If we have an explicit "Swap used:" line (captured in `swap`), we can deduce Compressed.
+    // Compressed = SWAPPED (table) - Swap used (explicit).
+    //
+    // If explicit "Swap used:" is missing (common on Sequoia), we assume Disk Swap is small/zero for per-process attribution
+    // (unless we can find another source), so Compressed ~= SWAPPED (table).
+    //
+    // However, if we blindly set `swap = swap_from_table` (like we did before), we are saying it's ALL Disk Swap.
+    // Activity Monitor puts this in "VM Compressed".
+    // So we should shift `swap_from_table` to `comp` if `swap` (explicit) is 0.
+    
+    if comp == 0 {
+        if swap > 0 && swap_from_table > swap {
+            // We have explicit disk swap, and table swap is larger.
+            // Difference is likely compressed.
+            comp = swap_from_table.saturating_sub(swap);
+        } else if swap == 0 && swap_from_table > 0 {
+            // No explicit disk swap found. Assume table swap is mostly Compressed.
+            // This matches Activity Monitor which shows "VM Compressed" for these values.
+            comp = swap_from_table;
+            // But wait, should we report swap as 0?
+            // If the user wants to see "Swap", and we move it to "Compressed", Swap will be 0.
+            // This is actually CORRECT if it's compressed memory and not disk swap.
+            // Activity Monitor shows "Swap Used: 0 bytes" for these processes usually.
+        }
     }
     
-    // Estimate compressed if missing and we have phys + resident
-    if comp == 0 && phys > 0 && resident_from_table > 0 {
-        comp = phys.saturating_sub(resident_from_table);
+    // Safety check: if we moved everything to comp, ensure swap is 0 if it was derived from table
+    if swap == swap_from_table && comp == swap_from_table {
+        // We just duplicated it.
+        // If we decided it's compressed, we should zero out swap (disk).
+        swap = 0;
     }
 
     Ok(ProcessMemory {
@@ -165,10 +195,16 @@ TOTAL                              6.4G     1.1G     1.1G     1.9G       0K   25
         let mem = parse_vmmap_output(413, "WindowServer", output).unwrap();
         // Phys: 3.0G
         assert_eq!(mem.physical_footprint, (3.0 * 1024.0 * 1024.0 * 1024.0) as u64);
-        // Swap: 1.9G (from table)
-        assert_eq!(mem.swap_used, (1.9 * 1024.0 * 1024.0 * 1024.0) as u64);
-        // Comp: Phys (3.0) - Resident (1.1) = 1.9G
-        let expected_comp = (3.0 * 1024.0 * 1024.0 * 1024.0) as u64 - (1.1 * 1024.0 * 1024.0 * 1024.0) as u64;
-        assert_eq!(mem.compressed, expected_comp);
+        
+        // Old logic: Swap = 1.9G, Comp = Phys - Dirty = 1.9G.
+        // New logic: 
+        // 1. explicit swap = 0.
+        // 2. swap_from_table = 1.9G.
+        // 3. comp = swap_from_table = 1.9G.
+        // 4. swap (disk) remains 0.
+        
+        // This is arguably MORE correct for Activity Monitor matching, as AM shows 2.0G Compressed and 0 Swap (usually).
+        assert_eq!(mem.compressed, (1.9 * 1024.0 * 1024.0 * 1024.0) as u64);
+        assert_eq!(mem.swap_used, 0); 
     }
 }

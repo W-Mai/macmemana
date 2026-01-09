@@ -121,7 +121,8 @@ fn render_idle_status(f: &mut Frame, app: &mut App, area: Rect) {
         ByteSize(app.total_compressed),
         ByteSize(app.total_phys)
     );
-
+    
+    // Note: Total Swap is the sum of logical swap per process, which can be larger than disk swap usage due to sharing.
     let status = format!("{} | 'r': Refresh | 'q': Quit | 's': Swap | 't': Total | 'x': Kill", summary);
 
     let p = Paragraph::new(status)
