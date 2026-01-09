@@ -61,16 +61,26 @@ fn parse_vmmap_output(pid: i32, name: &str, output: &str) -> Result<ProcessMemor
     static RE_PHYSICAL: OnceLock<Regex> = OnceLock::new();
     static RE_COMPRESSED: OnceLock<Regex> = OnceLock::new();
     static RE_SWAP: OnceLock<Regex> = OnceLock::new();
+    static RE_TOTAL_TABLE: OnceLock<Regex> = OnceLock::new();
 
     let re_physical = RE_PHYSICAL.get_or_init(|| Regex::new(r"Physical footprint:\s+([\d\.]+)([KMG]?)").unwrap());
     let re_compressed = RE_COMPRESSED.get_or_init(|| Regex::new(r"Compressed:\s+([\d\.]+)([KMG]?)").unwrap());
     let re_swap = RE_SWAP.get_or_init(|| Regex::new(r"Swap used:\s+([\d\.]+)([KMG]?)").unwrap());
+    // Match TOTAL line in REGION TYPE table: TOTAL ...
+    // Columns: VIRTUAL RESIDENT DIRTY SWAPPED ...
+    // We want capture group 2 (Resident) and 4 (Swapped)
+    // Regex: ^TOTAL\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)
+    let re_total_table = RE_TOTAL_TABLE.get_or_init(|| Regex::new(r"^TOTAL\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)").unwrap());
 
     let mut phys = 0;
     let mut comp = 0;
     let mut swap = 0;
+    let mut resident_from_table = 0;
+    let mut swap_from_table = 0;
+    let mut found_total_table = false;
 
     for line in output.lines() {
+        let line = line.trim();
         if let Some(caps) = re_physical.captures(line) {
             phys = parse_size(&format!("{}{}", &caps[1], &caps[2]));
         }
@@ -80,6 +90,25 @@ fn parse_vmmap_output(pid: i32, name: &str, output: &str) -> Result<ProcessMemor
         if let Some(caps) = re_swap.captures(line) {
             swap = parse_size(&format!("{}{}", &caps[1], &caps[2]));
         }
+        
+        // Fallback: Parse table if explicit lines are missing
+        if !found_total_table {
+             if let Some(caps) = re_total_table.captures(line) {
+                 resident_from_table = parse_size(&caps[2]);
+                 swap_from_table = parse_size(&caps[4]);
+                 found_total_table = true;
+             }
+        }
+    }
+
+    // Apply fallbacks
+    if swap == 0 && swap_from_table > 0 {
+        swap = swap_from_table;
+    }
+    
+    // Estimate compressed if missing and we have phys + resident
+    if comp == 0 && phys > 0 && resident_from_table > 0 {
+        comp = phys.saturating_sub(resident_from_table);
     }
 
     Ok(ProcessMemory {
@@ -118,5 +147,28 @@ Swap used:             5.84G
         assert_eq!(mem.physical_footprint, (8.12 * 1024.0 * 1024.0 * 1024.0) as u64);
         assert_eq!(mem.compressed, (2.31 * 1024.0 * 1024.0 * 1024.0) as u64);
         assert_eq!(mem.swap_used, (5.84 * 1024.0 * 1024.0 * 1024.0) as u64);
+    }
+
+    #[test]
+    fn test_parse_vmmap_output_table_fallback() {
+        let output = r#"
+Process:         WindowServer [413]
+...
+Physical footprint:         3.0G
+...
+                                VIRTUAL RESIDENT    DIRTY  SWAPPED VOLATILE   NONVOL    EMPTY   REGION 
+REGION TYPE                        SIZE     SIZE     SIZE     SIZE     SIZE     SIZE     SIZE    COUNT (non-coalesced) 
+===========                     ======= ========    =====  ======= ========   ======    =====  ======= 
+TOTAL                              6.4G     1.1G     1.1G     1.9G       0K   257.5M   197.0M    63744 
+        "#;
+        
+        let mem = parse_vmmap_output(413, "WindowServer", output).unwrap();
+        // Phys: 3.0G
+        assert_eq!(mem.physical_footprint, (3.0 * 1024.0 * 1024.0 * 1024.0) as u64);
+        // Swap: 1.9G (from table)
+        assert_eq!(mem.swap_used, (1.9 * 1024.0 * 1024.0 * 1024.0) as u64);
+        // Comp: Phys (3.0) - Resident (1.1) = 1.9G
+        let expected_comp = (3.0 * 1024.0 * 1024.0 * 1024.0) as u64 - (1.1 * 1024.0 * 1024.0 * 1024.0) as u64;
+        assert_eq!(mem.compressed, expected_comp);
     }
 }
