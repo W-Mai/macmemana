@@ -1,5 +1,5 @@
 use crate::app::App;
-use bytesize::ByteSize;
+use crate::scanner::format_size;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -34,9 +34,9 @@ fn render_table(f: &mut Frame, app: &mut App, area: Rect) {
         let cells = vec![
             Cell::from(item.pid.to_string()),
             Cell::from(item.name.clone()),
-            Cell::from(ByteSize(item.physical_footprint).to_string()),
-            Cell::from(ByteSize(item.swapped).to_string()),
-            Cell::from(ByteSize(item.total()).to_string()),
+            Cell::from(format_size(item.physical_footprint)),
+            Cell::from(format_size(item.swap_disk)),
+            Cell::from(format_size(item.total())),
         ];
         Row::new(cells).height(1)
     });
@@ -114,14 +114,14 @@ fn render_loading_status(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_idle_status(f: &mut Frame, app: &mut App, area: Rect) {
     let summary = format!(
-        "System Swap: {} | Total Swapped: {} | Total Phys: {}",
+        "System Swap: {} | Total Swap: {} | Total Phys: {}",
         app.system_swap,
-        ByteSize(app.total_swapped),
-        ByteSize(app.total_phys)
+        format_size(app.total_swap),
+        format_size(app.total_phys)
     );
 
     let status = format!(
-        "{} | 'r': Refresh | 'q': Quit | 's': Swapped | 't': Total | 'x': Kill",
+        "{} | 'r': Refresh | 'q': Quit | 's': Swap | 't': Total | 'x': Kill",
         summary
     );
 

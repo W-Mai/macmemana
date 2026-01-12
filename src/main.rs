@@ -12,7 +12,6 @@ use std::{
 
 use anyhow::Result;
 use app::{App, SortColumn};
-use bytesize::ByteSize;
 use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -21,7 +20,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use rayon::prelude::*;
-use scanner::{ProcessMemory, get_process_memory};
+use scanner::{ProcessMemory, format_size, get_process_memory};
 use sysinfo::System;
 
 #[derive(Parser, Debug)]
@@ -31,8 +30,8 @@ struct Args {
     #[arg(long)]
     cli: bool,
 
-    /// Sort by column (swapped, phys)
-    #[arg(long, default_value = "swapped")]
+    /// Sort by column (swap, phys)
+    #[arg(long, default_value = "swap")]
     sort: String,
 }
 
@@ -73,6 +72,7 @@ fn run_cli(args: Args) -> Result<()> {
         .iter()
         .map(|(pid, process)| (pid.as_u32() as i32, process.name().to_string()))
         .collect();
+    let had_windowserver = pids.iter().any(|(_, name)| name.contains("WindowServer"));
 
     if let Err(e) = writeln!(out, "Found {} processes. Starting scan...", pids.len()) {
         if e.kind() == io::ErrorKind::BrokenPipe {
@@ -88,16 +88,28 @@ fn run_cli(args: Args) -> Result<()> {
                 pid: *pid,
                 name: name.clone(),
                 physical_footprint: 0,
-                swapped: 0,
+                compressed: 0,
+                swapped_total: 0,
+                swap_disk_est: 0,
+                swap_disk: 0,
             })
         })
         .filter(|p| p.total() > 0)
         .collect();
 
+    let system_swap_str = get_system_swap().unwrap_or_else(|| String::from("0B"));
+    let system_swap_bytes = scanner::parse_size(&system_swap_str);
+    normalize_process_swaps(&mut processes, system_swap_bytes);
+    let has_windowserver = processes.iter().any(|p| p.name.contains("WindowServer"));
+    if had_windowserver && !has_windowserver {
+        eprintln!("WindowServer not included (vmmap permission denied). Try: sudo macmemana --cli");
+    }
+    let sum_swap_bytes: u64 = processes.iter().map(|p| p.swap_disk).sum();
+
     // Sort
     match args.sort.as_str() {
         "phys" => processes.sort_by(|a, b| b.physical_footprint.cmp(&a.physical_footprint)),
-        _ => processes.sort_by(|a, b| b.swapped.cmp(&a.swapped)),
+        _ => processes.sort_by(|a, b| b.swap_disk.cmp(&a.swap_disk)),
     }
 
     if let Err(e) = writeln!(
@@ -118,17 +130,17 @@ fn run_cli(args: Args) -> Result<()> {
         return Err(e.into());
     }
 
-    for p in processes {
-        if p.swapped > 0 || p.physical_footprint > 100 * 1024 * 1024 {
+    for p in &processes {
+        if p.swap_disk > 0 || p.physical_footprint > 100 * 1024 * 1024 {
             // Show if swapped > 0 or phys > 100MB
             if let Err(e) = writeln!(
                 out,
                 "{:<8} {:<30} {:<15} {:<15} {:<15}",
                 p.pid,
                 truncate(&p.name, 30),
-                ByteSize(p.physical_footprint),
-                ByteSize(p.swapped),
-                ByteSize(p.total())
+                format_size(p.physical_footprint),
+                format_size(p.swap_disk),
+                format_size(p.total())
             ) {
                 if e.kind() == io::ErrorKind::BrokenPipe {
                     return Ok(());
@@ -136,6 +148,18 @@ fn run_cli(args: Args) -> Result<()> {
                 return Err(e.into());
             }
         }
+    }
+    if let Err(e) = writeln!(
+        out,
+        "System Swap Used: {} | Swap Sum: {} | Delta: {}",
+        system_swap_str,
+        format_size(sum_swap_bytes),
+        format_size(sum_swap_bytes.abs_diff(system_swap_bytes))
+    ) {
+        if e.kind() == io::ErrorKind::BrokenPipe {
+            return Ok(());
+        }
+        return Err(e.into());
     }
 
     Ok(())
@@ -190,6 +214,7 @@ fn run_tui() -> Result<()> {
     app.is_loading = true;
     if let Some(s) = get_system_swap() {
         app.system_swap = s;
+        app.system_swap_bytes = scanner::parse_size(&app.system_swap);
     }
 
     let tick_rate = Duration::from_millis(100); // Faster tick for smooth animation
@@ -213,10 +238,11 @@ fn run_tui() -> Result<()> {
                     if !app.is_loading {
                         app.is_loading = true;
                         app.processes.clear(); // Clear existing list on refresh
-                        app.total_swapped = 0;
+                        app.total_swap = 0;
                         app.total_phys = 0;
                         if let Some(s) = get_system_swap() {
                             app.system_swap = s;
+                            app.system_swap_bytes = scanner::parse_size(&app.system_swap);
                         }
                         let tx_scan = tx.clone();
                         thread::spawn(move || {
@@ -227,7 +253,7 @@ fn run_tui() -> Result<()> {
                 KeyCode::Down | KeyCode::Char('j') => app.next(),
                 KeyCode::Up | KeyCode::Char('k') => app.previous(),
                 KeyCode::Char('s') => {
-                    app.sort_column = SortColumn::Swapped;
+                    app.sort_column = SortColumn::Swap;
                     app.sort_desc = true;
                     app.sort();
                 }
@@ -283,6 +309,7 @@ fn run_tui() -> Result<()> {
                     app.is_loading = false;
                     app.scan_progress = None;
                     app.current_scanning = None;
+                    app.normalize_swap_to_system();
                     // Final sort to be sure
                     app.sort();
                     if app.state.selected().is_none() && !app.processes.is_empty() {
@@ -344,4 +371,76 @@ fn perform_scan(tx: mpsc::Sender<EventWrapper>) {
     });
 
     let _ = tx.send(EventWrapper::Complete);
+}
+
+fn normalize_process_swaps(processes: &mut [ProcessMemory], system_swap_bytes: u64) {
+    if system_swap_bytes == 0 || processes.is_empty() {
+        return;
+    }
+
+    let mut windowserver_idx = None;
+    for (i, p) in processes.iter().enumerate() {
+        if p.name.contains("WindowServer") {
+            windowserver_idx = Some(i);
+            break;
+        }
+    }
+
+    let ws_display = if let Some(i) = windowserver_idx {
+        let ws_est = processes[i].swap_disk_est;
+        let ws_display = ws_est.min(system_swap_bytes);
+        processes[i].swap_disk = ws_display;
+        ws_display
+    } else {
+        0
+    };
+
+    let remaining = system_swap_bytes.saturating_sub(ws_display);
+    let mut sum_other_est: u64 = 0;
+    for (i, p) in processes.iter().enumerate() {
+        if Some(i) == windowserver_idx {
+            continue;
+        }
+        sum_other_est = sum_other_est.saturating_add(p.swap_disk_est);
+    }
+
+    if sum_other_est == 0 {
+        for (i, p) in processes.iter_mut().enumerate() {
+            if Some(i) == windowserver_idx {
+                continue;
+            }
+            p.swap_disk = 0;
+        }
+        return;
+    }
+
+    let factor = remaining as f64 / sum_other_est as f64;
+    let mut sum_scaled: u64 = 0;
+    let mut max_other_idx = None;
+    let mut max_other_est = 0;
+    for (i, p) in processes.iter_mut().enumerate() {
+        if Some(i) == windowserver_idx {
+            continue;
+        }
+        if p.swap_disk_est > max_other_est {
+            max_other_est = p.swap_disk_est;
+            max_other_idx = Some(i);
+        }
+        let scaled = ((p.swap_disk_est as f64) * factor).round() as u64;
+        p.swap_disk = scaled;
+        sum_scaled = sum_scaled.saturating_add(scaled);
+    }
+
+    let current_sum = ws_display.saturating_add(sum_scaled);
+    if current_sum != system_swap_bytes {
+        let diff = system_swap_bytes as i128 - current_sum as i128;
+        if let Some(i) = max_other_idx.or(windowserver_idx) {
+            if diff.is_negative() {
+                let sub = (-diff) as u64;
+                processes[i].swap_disk = processes[i].swap_disk.saturating_sub(sub);
+            } else {
+                processes[i].swap_disk = processes[i].swap_disk.saturating_add(diff as u64);
+            }
+        }
+    }
 }

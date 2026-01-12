@@ -8,16 +8,21 @@ pub struct ProcessMemory {
     pub pid: i32,
     pub name: String,
     pub physical_footprint: u64,
-    pub swapped: u64,
+    #[allow(dead_code)]
+    pub compressed: u64,
+    #[allow(dead_code)]
+    pub swapped_total: u64,
+    pub swap_disk_est: u64,
+    pub swap_disk: u64,
 }
 
 impl ProcessMemory {
     pub fn total(&self) -> u64 {
-        self.physical_footprint + self.swapped
+        self.physical_footprint + self.swap_disk
     }
 }
 
-fn parse_size(size_str: &str) -> u64 {
+pub(crate) fn parse_size(size_str: &str) -> u64 {
     let size_str = size_str.trim().to_uppercase();
     let (num_str, multiplier) = if size_str.ends_with('G') {
         (size_str.trim_end_matches('G'), 1024 * 1024 * 1024)
@@ -31,6 +36,23 @@ fn parse_size(size_str: &str) -> u64 {
 
     let num: f64 = num_str.parse().unwrap_or(0.0);
     (num * multiplier as f64) as u64
+}
+
+pub(crate) fn format_size(bytes: u64) -> String {
+    const K: f64 = 1024.0;
+    const M: f64 = 1024.0 * 1024.0;
+    const G: f64 = 1024.0 * 1024.0 * 1024.0;
+
+    let b = bytes as f64;
+    if bytes >= G as u64 {
+        format!("{:.1}G", b / G)
+    } else if bytes >= M as u64 {
+        format!("{:.1}M", b / M)
+    } else if bytes >= K as u64 {
+        format!("{:.1}K", b / K)
+    } else {
+        format!("{}B", bytes)
+    }
 }
 
 pub fn get_process_memory(pid: i32, name: &str) -> Result<ProcessMemory> {
@@ -47,7 +69,10 @@ pub fn get_process_memory(pid: i32, name: &str) -> Result<ProcessMemory> {
             pid,
             name: name.to_string(),
             physical_footprint: 0,
-            swapped: 0,
+            compressed: 0,
+            swapped_total: 0,
+            swap_disk_est: 0,
+            swap_disk: 0,
         });
     }
 
@@ -57,12 +82,18 @@ pub fn get_process_memory(pid: i32, name: &str) -> Result<ProcessMemory> {
 
 fn parse_vmmap_output(pid: i32, name: &str, output: &str) -> Result<ProcessMemory> {
     static RE_PHYSICAL: OnceLock<Regex> = OnceLock::new();
+    static RE_COMPRESSED: OnceLock<Regex> = OnceLock::new();
+    static RE_SWAP_USED: OnceLock<Regex> = OnceLock::new();
     static RE_WRITABLE: OnceLock<Regex> = OnceLock::new();
     static RE_TOTAL_TABLE: OnceLock<Regex> = OnceLock::new();
     static RE_TOTAL_TABLE_MINUS_RESERVED: OnceLock<Regex> = OnceLock::new();
 
     let re_physical =
         RE_PHYSICAL.get_or_init(|| Regex::new(r"Physical footprint:\s+([\d\.]+)([KMG]?)").unwrap());
+    let re_compressed =
+        RE_COMPRESSED.get_or_init(|| Regex::new(r"Compressed:\s+([\d\.]+)([KMG]?)").unwrap());
+    let re_swap_used =
+        RE_SWAP_USED.get_or_init(|| Regex::new(r"Swap used:\s+([\d\.]+)([KMG]?)").unwrap());
     // Parse Writable regions line: "Writable regions: Total=803.6M written=512.8M(64%) resident=371.0M(46%) swapped_out=213.9M(27%)"
     let re_writable = RE_WRITABLE
         .get_or_init(|| Regex::new(r"Writable regions:.*swapped_out=([\d\.]+)([KMG]?)").unwrap());
@@ -79,6 +110,8 @@ fn parse_vmmap_output(pid: i32, name: &str, output: &str) -> Result<ProcessMemor
     });
 
     let mut phys = 0;
+    let mut compressed = 0;
+    let mut swap_used = 0;
     let mut resident_from_table = 0;
     let mut swap_from_table = 0;
     let mut writable_swapped_out = 0;
@@ -89,6 +122,12 @@ fn parse_vmmap_output(pid: i32, name: &str, output: &str) -> Result<ProcessMemor
         let line = line.trim();
         if let Some(caps) = re_physical.captures(line) {
             phys = parse_size(&format!("{}{}", &caps[1], &caps[2]));
+        }
+        if let Some(caps) = re_compressed.captures(line) {
+            compressed = parse_size(&format!("{}{}", &caps[1], &caps[2]));
+        }
+        if let Some(caps) = re_swap_used.captures(line) {
+            swap_used = parse_size(&format!("{}{}", &caps[1], &caps[2]));
         }
         if let Some(caps) = re_writable.captures(line) {
             writable_swapped_out = parse_size(&format!("{}{}", &caps[1], &caps[2]));
@@ -122,7 +161,7 @@ fn parse_vmmap_output(pid: i32, name: &str, output: &str) -> Result<ProcessMemor
         }
     }
 
-    let swapped = if swap_from_table > 0 {
+    let swapped_total = if swap_from_table > 0 {
         swap_from_table
     } else if writable_swapped_out > 0 {
         writable_swapped_out
@@ -132,11 +171,27 @@ fn parse_vmmap_output(pid: i32, name: &str, output: &str) -> Result<ProcessMemor
         0
     };
 
+    let disk_from_swapped = swapped_total.saturating_sub(compressed);
+    let swap_disk_est = if swapped_total > 0 {
+        if swap_used > 0 {
+            disk_from_swapped.min(swap_used)
+        } else {
+            disk_from_swapped
+        }
+    } else if swap_used > 0 {
+        swap_used
+    } else {
+        0
+    };
+
     Ok(ProcessMemory {
         pid,
         name: name.to_string(),
         physical_footprint: phys,
-        swapped,
+        compressed,
+        swapped_total,
+        swap_disk_est,
+        swap_disk: swap_disk_est,
     })
 }
 
@@ -159,6 +214,8 @@ Virtual Memory Map of process 12345 (TestApp)
 Output report format:  2.4  -- 64-bit process
 ...
 Physical footprint:     8.12G
+Compressed:            2.31G
+Swap used:             1.23G
                                 VIRTUAL RESIDENT    DIRTY  SWAPPED
 TOTAL                              1.0G     1.0G     1.0G     5.84G
         "#;
@@ -168,7 +225,9 @@ TOTAL                              1.0G     1.0G     1.0G     5.84G
             mem.physical_footprint,
             (8.12 * 1024.0 * 1024.0 * 1024.0) as u64
         );
-        assert_eq!(mem.swapped, (5.84 * 1024.0 * 1024.0 * 1024.0) as u64);
+        assert_eq!(mem.swapped_total, (5.84 * 1024.0 * 1024.0 * 1024.0) as u64);
+        assert_eq!(mem.compressed, (2.31 * 1024.0 * 1024.0 * 1024.0) as u64);
+        assert_eq!(mem.swap_disk_est, (1.23 * 1024.0 * 1024.0 * 1024.0) as u64);
     }
 
     #[test]
@@ -191,18 +250,8 @@ TOTAL                              6.4G     1.1G     1.1G     1.9G       0K   25
             (3.0 * 1024.0 * 1024.0 * 1024.0) as u64
         );
         // Swapped should be 1.9G (from Table), not 1.7G (from Writable)
-        assert_eq!(mem.swapped, (1.9 * 1024.0 * 1024.0 * 1024.0) as u64);
-    }
-
-    #[test]
-    fn test_parse_vmmap_output_windowserver_fixture() {
-        let output = include_str!("../windowserver_vmmap.txt");
-        let mem = parse_vmmap_output(413, "WindowServer", output).unwrap();
-        assert_eq!(
-            mem.physical_footprint,
-            (3.1 * 1024.0 * 1024.0 * 1024.0) as u64
-        );
-        assert_eq!(mem.swapped, (1.8 * 1024.0 * 1024.0 * 1024.0) as u64);
+        assert_eq!(mem.swapped_total, (1.9 * 1024.0 * 1024.0 * 1024.0) as u64);
+        assert_eq!(mem.swap_disk_est, (1.9 * 1024.0 * 1024.0 * 1024.0) as u64);
     }
 
     #[test]
@@ -217,7 +266,8 @@ TOTAL                              6.4G     1.0G     1.0G     0K
         let mem = parse_vmmap_output(123, "TestApp", output).unwrap();
         // Phys 3.0G. Res 1.0G. Swap 0.
         // Swapped = Phys - Res = 2.0G
-        assert_eq!(mem.swapped, (2.0 * 1024.0 * 1024.0 * 1024.0) as u64);
+        assert_eq!(mem.swapped_total, (2.0 * 1024.0 * 1024.0 * 1024.0) as u64);
+        assert_eq!(mem.swap_disk_est, (2.0 * 1024.0 * 1024.0 * 1024.0) as u64);
     }
 
     #[test]
@@ -232,6 +282,33 @@ Writable regions: Total=803.6M written=512.8M(64%) resident=371.0M(46%) swapped_
         // Phys 591.1M.
         assert_eq!(mem.physical_footprint, (591.1 * 1024.0 * 1024.0) as u64);
         // Swapped = Writable swapped_out = 213.9M
-        assert_eq!(mem.swapped, (213.9 * 1024.0 * 1024.0) as u64);
+        assert_eq!(mem.swapped_total, (213.9 * 1024.0 * 1024.0) as u64);
+        assert_eq!(mem.swap_disk_est, (213.9 * 1024.0 * 1024.0) as u64);
+    }
+
+    #[test]
+    fn test_parse_vmmap_output_disk_swap_est_from_swapped_minus_compressed() {
+        let output = r#"
+Process:         WindowServer [413]
+Physical footprint:         3.9G
+Compressed:               900M
+                                VIRTUAL RESIDENT    DIRTY  SWAPPED
+TOTAL                              6.2G     1.2G     1.3G     2.7G
+        "#;
+        let mem = parse_vmmap_output(413, "WindowServer", output).unwrap();
+        assert_eq!(mem.swapped_total, (2.7 * 1024.0 * 1024.0 * 1024.0) as u64);
+        let expected = parse_size("2.7G").saturating_sub(parse_size("900M"));
+        assert_eq!(mem.swap_disk_est, expected);
+    }
+
+    #[test]
+    fn test_parse_vmmap_output_windowserver_fixture() {
+        let output = include_str!("../windowserver_vmmap.txt");
+        let mem = parse_vmmap_output(413, "WindowServer", output).unwrap();
+        assert_eq!(
+            mem.physical_footprint,
+            (3.1 * 1024.0 * 1024.0 * 1024.0) as u64
+        );
+        assert_eq!(mem.swap_disk_est, (1.8 * 1024.0 * 1024.0 * 1024.0) as u64);
     }
 }
