@@ -1,21 +1,18 @@
+use crate::app::App;
+use bytesize::ByteSize;
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table},
-    Frame,
 };
-use crate::app::App;
-use bytesize::ByteSize;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(0),
-            Constraint::Length(3),
-        ])
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
         .split(f.size());
 
     render_table(f, app, chunks[0]);
@@ -23,10 +20,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 }
 
 fn render_table(f: &mut Frame, app: &mut App, area: Rect) {
-    let header_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let header_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
     let selected_style = Style::default().add_modifier(Modifier::REVERSED);
 
-    let header_cells = ["PID", "Name", "Physical", "Compressed", "Swap", "Total"]
+    let header_cells = ["PID", "Name", "Physical", "Swap", "Total"]
         .iter()
         .map(|h| Cell::from(*h).style(header_style));
     let header = Row::new(header_cells).height(1).bottom_margin(1);
@@ -36,8 +35,7 @@ fn render_table(f: &mut Frame, app: &mut App, area: Rect) {
             Cell::from(item.pid.to_string()),
             Cell::from(item.name.clone()),
             Cell::from(ByteSize(item.physical_footprint).to_string()),
-            Cell::from(ByteSize(item.compressed).to_string()),
-            Cell::from(ByteSize(item.swap_used).to_string()),
+            Cell::from(ByteSize(item.swapped).to_string()),
             Cell::from(ByteSize(item.total()).to_string()),
         ];
         Row::new(cells).height(1)
@@ -46,11 +44,10 @@ fn render_table(f: &mut Frame, app: &mut App, area: Rect) {
     // Mark sorted column
     let widths = [
         Constraint::Length(8),
-        Constraint::Percentage(30),
-        Constraint::Percentage(15),
-        Constraint::Percentage(15),
-        Constraint::Percentage(15),
-        Constraint::Percentage(15),
+        Constraint::Percentage(40),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
     ];
 
     let t = Table::new(rows, widths)
@@ -73,10 +70,7 @@ fn render_status(f: &mut Frame, app: &mut App, area: Rect) {
 fn render_loading_status(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(70),
-            Constraint::Percentage(30),
-        ])
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(area);
 
     // Render Gauge
@@ -86,7 +80,7 @@ fn render_loading_status(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             0
         };
-        
+
         let label = if let Some(name) = &app.current_scanning {
             format!("Scanning {}/{} - {}", current, total, name)
         } else {
@@ -95,13 +89,17 @@ fn render_loading_status(f: &mut Frame, app: &mut App, area: Rect) {
 
         let gauge = Gauge::default()
             .block(Block::default().borders(Borders::ALL).title("Progress"))
-            .gauge_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC))
+            .gauge_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::ITALIC),
+            )
             .percent(percent)
             .label(label);
-        
+
         f.render_widget(gauge, chunks[0]);
     } else {
-         let p = Paragraph::new("Initializing scan...")
+        let p = Paragraph::new("Initializing scan...")
             .block(Block::default().borders(Borders::ALL).title("Progress"));
         f.render_widget(p, chunks[0]);
     }
@@ -116,15 +114,16 @@ fn render_loading_status(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_idle_status(f: &mut Frame, app: &mut App, area: Rect) {
     let summary = format!(
-        "System Swap: {} | Total Disk Swap: {} | Total Comp: {} | Total Phys: {}",
+        "System Swap: {} | Total Swapped: {} | Total Phys: {}",
         app.system_swap,
-        ByteSize(app.total_swap),
-        ByteSize(app.total_compressed),
+        ByteSize(app.total_swapped),
         ByteSize(app.total_phys)
     );
-    
-    // Note: Total Swap is the sum of logical swap per process, which can be larger than disk swap usage due to sharing.
-    let status = format!("{} | 'r': Refresh | 'q': Quit | 's': Swap | 't': Total | 'x': Kill", summary);
+
+    let status = format!(
+        "{} | 'r': Refresh | 'q': Quit | 's': Swapped | 't': Total | 'x': Kill",
+        summary
+    );
 
     let p = Paragraph::new(status)
         .style(Style::default().fg(Color::White))

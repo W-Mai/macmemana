@@ -1,13 +1,12 @@
-use ratatui::widgets::TableState;
 use crate::scanner::ProcessMemory;
+use ratatui::widgets::TableState;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SortColumn {
     Pid,
     Name,
     Physical,
-    Compressed,
-    Swap,
+    Swapped,
     Total,
 }
 
@@ -21,8 +20,7 @@ pub struct App {
     pub scan_progress: Option<(usize, usize)>, // (current, total)
     pub current_scanning: Option<String>,
     pub spinner_idx: usize,
-    pub total_swap: u64,
-    pub total_compressed: u64,
+    pub total_swapped: u64,
     pub total_phys: u64,
     pub system_swap: String,
 }
@@ -33,14 +31,13 @@ impl App {
             should_quit: false,
             processes: Vec::new(),
             state: TableState::default(),
-            sort_column: SortColumn::Swap, // Default sort by Swap as requested
+            sort_column: SortColumn::Swapped,
             sort_desc: true,
             is_loading: false,
             scan_progress: None,
             current_scanning: None,
             spinner_idx: 0,
-            total_swap: 0,
-            total_compressed: 0,
+            total_swapped: 0,
             total_phys: 0,
             system_swap: String::from("Unknown"),
         }
@@ -90,8 +87,7 @@ impl App {
                 SortColumn::Pid => a.pid.cmp(&b.pid),
                 SortColumn::Name => a.name.cmp(&b.name),
                 SortColumn::Physical => a.physical_footprint.cmp(&b.physical_footprint),
-                SortColumn::Compressed => a.compressed.cmp(&b.compressed),
-                SortColumn::Swap => a.swap_used.cmp(&b.swap_used),
+                SortColumn::Swapped => a.swapped.cmp(&b.swapped),
                 SortColumn::Total => a.total().cmp(&b.total()),
             };
             if self.sort_desc {
@@ -102,11 +98,8 @@ impl App {
         });
     }
 
-
-
     pub fn add_process(&mut self, process: ProcessMemory) {
-        self.total_swap += process.swap_used;
-        self.total_compressed += process.compressed;
+        self.total_swapped += process.swapped;
         self.total_phys += process.physical_footprint;
         self.processes.push(process);
         // Maybe sort every time? Or just every N times?
@@ -120,14 +113,13 @@ impl App {
     }
 
     pub fn kill_selected(&mut self) {
-        if let Some(i) = self.state.selected() {
-            if let Some(p) = self.processes.get(i) {
-                let _ = std::process::Command::new("kill")
-                    .arg("-9")
-                    .arg(p.pid.to_string())
-                    .output();
-                // Optionally remove from list immediately or wait for refresh
-            }
+        if let Some(i) = self.state.selected()
+            && let Some(p) = self.processes.get(i)
+        {
+            let _ = std::process::Command::new("kill")
+                .arg("-9")
+                .arg(p.pid.to_string())
+                .output();
         }
     }
 }
