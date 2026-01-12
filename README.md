@@ -1,7 +1,8 @@
 # macmemana
 
 <p align="center">
-  <img src="statics/MACMEMANALOGO.svg" alt="macmemana logo" width="200"/>
+  <img src="statics/MACMEMANALOGO.svg#gh-light-mode-only" alt="macmemana logo" width="600"/>
+  <img src="statics/MACMEMANALOGO_dark.svg#gh-dark-mode-only" alt="macmemana logo" width="600"/>
 </p>
 
 **macmemana** (Mac Memory Analyzer) is a terminal-based memory analysis tool specifically designed for macOS. It provides accurate swap usage reporting by leveraging `vmmap` to dig into process memory details, solving common discrepancies found in standard tools.
