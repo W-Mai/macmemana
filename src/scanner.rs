@@ -195,6 +195,17 @@ TOTAL                              6.4G     1.1G     1.1G     1.9G       0K   25
     }
 
     #[test]
+    fn test_parse_vmmap_output_windowserver_fixture() {
+        let output = include_str!("../windowserver_vmmap.txt");
+        let mem = parse_vmmap_output(413, "WindowServer", output).unwrap();
+        assert_eq!(
+            mem.physical_footprint,
+            (3.1 * 1024.0 * 1024.0 * 1024.0) as u64
+        );
+        assert_eq!(mem.swapped, (1.8 * 1024.0 * 1024.0 * 1024.0) as u64);
+    }
+
+    #[test]
     fn test_parse_vmmap_output_phys_fallback() {
         // Case where Table SWAPPED is missing or 0, but we have Phys and Res
         let output = r#"
