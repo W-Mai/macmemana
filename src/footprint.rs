@@ -61,8 +61,9 @@ pub fn get_footprint_for_pids(pids: &[i32]) -> Result<HashMap<i32, FootprintData
         cmd.arg(pid.to_string());
     }
 
-    // Silence stderr to prevent TUI corruption
+    // Silence stderr and stdout to prevent TUI corruption
     let status = cmd
+        .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .context("Failed to execute footprint")?;

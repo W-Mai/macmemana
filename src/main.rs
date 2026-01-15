@@ -11,6 +11,7 @@ use std::{
     thread,
     time::{Duration, Instant},
     collections::HashMap,
+    fs::File,
 };
 
 use anyhow::Result;
@@ -53,11 +54,30 @@ fn main() -> Result<()> {
     if args.cli {
         run_cli(args)?;
     } else {
+        // Redirect stderr to /dev/null to prevent TUI corruption
+        if let Ok(file) = File::create("/dev/null") {
+            // Use libc to dup2 file descriptor to stderr (fd 2)
+            use std::os::unix::io::AsRawFd;
+            unsafe {
+                libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
+            }
+        }
+        
+        // Setup panic hook to restore terminal
+        let original_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |panic_info| {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+            original_hook(panic_info);
+        }));
+
         run_tui()?;
     }
 
     Ok(())
 }
+
+
 
 fn run_cli(args: Args) -> Result<()> {
     // CLI mode logic (kept simple for now, using optimized full scan if possible or fallback)
