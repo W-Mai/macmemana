@@ -5,67 +5,104 @@
   <img src="statics/MACMEMANALOGO_dark.svg#gh-dark-mode-only" alt="macmemana logo" width="600"/>
 </p>
 
-**macmemana** (Mac Memory Analyzer) is a terminal-based memory analysis tool specifically designed for macOS. It provides accurate swap usage reporting by leveraging `vmmap` to dig into process memory details, solving common discrepancies found in standard tools.
+<p align="center">
+  <strong>The Ultimate macOS Memory Analysis Tool</strong>
+</p>
 
-## Features
+<p align="center">
+  <a href="https://crates.io/crates/macmemana">
+    <img src="https://img.shields.io/crates/v/macmemana?style=flat-square" alt="Crates.io version" />
+  </a>
+  <a href="https://github.com/W-Mai/macmemana/blob/main/LICENSE">
+    <img src="https://img.shields.io/crates/l/macmemana?style=flat-square" alt="License" />
+  </a>
+  <a href="https://crates.io/crates/macmemana">
+    <img src="https://img.shields.io/crates/d/macmemana?style=flat-square" alt="Downloads" />
+  </a>
+</p>
 
-- **Accurate Swap Accounting**: Uses `vmmap` to distinguish between compressed memory, resident memory, and actual disk swap, providing a more realistic view of swap usage per process.
-- **System Swap Normalization**: Automatically adjusts process swap estimates to match the system-wide swap usage reported by the kernel.
-- **TUI Interface**: Interactive terminal user interface built with `ratatui` for real-time monitoring and sorting.
-- **CLI Mode**: Support for one-shot output for scripting or quick checks.
-- **Process Management**: Ability to kill processes directly from the TUI.
+**macmemana** (or simply `mma`) is a high-performance, terminal-based memory analyzer engineered specifically for macOS. Unlike generic tools, it leverages Apple's native `footprint` and `vmmap` utilities to demystify complex memory metrics—distinguishing between physical footprint, compressed memory, and actual swap usage with precision.
 
-## Installation
+## ✨ Features
 
-Ensure you have Rust and Cargo installed.
+- **🚀 Instant Startup**: Launches immediately with a lightweight scan, then progressively streams deep memory analysis in the background. No more staring at loading screens.
+- **💎 Accurate Swap Accounting**: Solves the "missing swap" mystery by digging into `footprint` data to calculate the exact `swapped_total` per process, normalizing it against system-wide kernel reports.
+- **📊 Interactive TUI**: A beautiful, responsive interface built with `ratatui`. Sort, filter, and monitor processes in real-time.
+- **⚡ Dual Binary Support**: Install once, use `macmemana` or the handy short alias `mma`.
+- **🛠 CLI Mode**: Robust one-shot output mode for scripts, generating detailed reports or JSON-friendly data.
+- **🛡 System-Aware**: Automatically handles macOS-specific memory quirks (compressed memory, purgeable pages, shared cache) that confuse cross-platform tools.
+
+## 📦 Installation
+
+### From Crates.io
 
 ```bash
-cargo install --path .
-# Or build manually
-cargo build --release
+cargo install macmemana
 ```
 
-## Usage
-
-### TUI Mode (Interactive)
-
-Running with `sudo` is highly recommended (and often required) to allow `vmmap` to inspect other users' processes and system services like `WindowServer`.
+### From Source
 
 ```bash
+git clone https://github.com/W-Mai/macmemana.git
+cd macmemana
+cargo install --path .
+```
+
+## 🚀 Usage
+
+### Interactive Mode (TUI)
+
+For the most accurate results—especially for system processes and other users' applications—running with `sudo` is highly recommended.
+
+```bash
+sudo mma
+# or
 sudo macmemana
 ```
 
+> **Why sudo?** macOS restricts access to detailed memory maps (`vmmap`/`footprint`) of processes not owned by the current user. Without root privileges, `mma` can only deeply analyze your own processes, leading to incomplete system-wide statistics.
+
 ### CLI Mode
 
-Dump the process list sorted by swap usage:
+Generate a detailed memory report directly to stdout:
 
 ```bash
-sudo macmemana --cli --sort swap
+sudo mma --cli
 ```
 
-Available sort options: `swap`, `phys` (physical footprint).
+Sort by specific columns:
 
-## Keyboard Shortcuts
+```bash
+# Sort by physical footprint (descending)
+sudo mma --cli --sort phys
+
+# Sort by swap usage (descending) - Default
+sudo mma --cli --sort swap
+```
+
+## ⌨️ Keyboard Shortcuts
 
 | Key | Action |
-| --- | --- |
-| `q` | Quit application |
-| `r` | Refresh (trigger a new scan) |
-| `j` / `↓` | Select next process |
-| `k` / `↑` | Select previous process |
+| :--- | :--- |
+| `q` | **Quit** application |
+| `r` | **Refresh** (trigger a deep rescan) |
+| `j` / `↓` | Select **Next** process |
+| `k` / `↑` | Select **Previous** process |
 | `s` | Sort by **Swap** (Descending) |
 | `p` | Sort by **Physical** Memory (Descending) |
 | `c` | Sort by **Compressed** Memory (Descending) |
 | `t` | Sort by **Total** Memory (Descending) |
 | `n` | Sort by **Name** (Ascending) |
 | `i` | Sort by **PID** (Ascending) |
-| `x` | Kill selected process |
+| `x` | **Kill** selected process (send SIGKILL) |
 
-## Why sudo?
+## 🛠 Technical Details
 
-macOS restricts access to memory maps of processes owned by other users or the system. Without `sudo`, `macmemana` can only analyze your own processes, leading to incomplete system-wide swap statistics.
+`macmemana` uses a multi-stage analysis pipeline:
+1. **Fast Path**: Immediately gathers basic process info via `sysinfo`.
+2. **Deep Path**: Spawns background workers to run `footprint` on process batches.
+3. **Normalization**: Aggregates per-process swap estimates and reconciles them with `sysctl vm.swapusage` to ensure the "Total Swap" matches the OS report perfectly.
 
-## License
+## 📄 License
 
-MIT
-
+MIT License © 2024 Benign X

@@ -1,6 +1,6 @@
 [package]
 name = "macmemana"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 authors = ["Benign X <1341398182@qq.com>"]
 description = "A terminal-based memory analysis tool for macOS with accurate swap accounting."
@@ -9,6 +9,14 @@ repository = "https://github.com/W-Mai/macmemana"
 readme = "README.md"
 keywords = ["memory", "macos", "swap", "monitor", "tui"]
 categories = ["command-line-utilities", "os::macos-apis"]
+
+[[bin]]
+name = "macmemana"
+path = "src/main.rs"
+
+[[bin]]
+name = "mma"
+path = "src/main.rs"
 
 [dependencies]
 ratatui = "0.26"
