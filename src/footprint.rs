@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
@@ -15,12 +15,7 @@ struct FootprintProcess {
     pid: i32,
     name: String,
     #[serde(default)]
-    footprint: u64, // Matches "total footprint" in JSON (Physical + Swapped? No, seems to be Dirty/Physical)
-    // Actually check JSON output again:
-    // "footprint": 8995904
-    // "auxiliary": { "phys_footprint": 9028672 }
-    // They are close but not identical. "footprint" might be Dirty.
-    // We prefer "phys_footprint" from auxiliary if available.
+    footprint: u64,
     auxiliary: Option<FootprintAuxiliary>,
     summary: Option<FootprintSummary>,
 }
@@ -44,21 +39,31 @@ struct FootprintTotal {
 pub struct FootprintData {
     #[allow(dead_code)]
     pub pid: i32,
+    #[allow(dead_code)]
     pub name: String,
     pub physical_footprint: u64,
     pub swapped_total: u64,
 }
 
-pub fn get_all_processes_footprint() -> Result<HashMap<i32, FootprintData>> {
+pub fn get_footprint_for_pids(pids: &[i32]) -> Result<HashMap<i32, FootprintData>> {
+    if pids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
     let tmp_path =
         std::env::temp_dir().join(format!("macmemana_footprint_{}.json", Uuid::new_v4()));
 
-    // Check if we have root, otherwise this might fail for -a.
-    // If it fails, we return error and scanner can fallback.
-    let status = Command::new("footprint")
-        .arg("-a")
-        .arg("-j")
-        .arg(&tmp_path)
+    let mut cmd = Command::new("footprint");
+    cmd.arg("-j").arg(&tmp_path);
+    
+    // Add all PIDs as arguments
+    for pid in pids {
+        cmd.arg(pid.to_string());
+    }
+
+    // Silence stderr to prevent TUI corruption
+    let status = cmd
+        .stderr(Stdio::null())
         .status()
         .context("Failed to execute footprint")?;
 
@@ -68,7 +73,7 @@ pub fn get_all_processes_footprint() -> Result<HashMap<i32, FootprintData>> {
             let _ = fs::remove_file(&tmp_path);
         }
         return Err(anyhow::anyhow!(
-            "footprint command failed (likely permission denied for -a)"
+            "footprint command failed"
         ));
     }
 

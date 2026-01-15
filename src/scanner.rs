@@ -8,9 +8,7 @@ pub struct ProcessMemory {
     pub pid: i32,
     pub name: String,
     pub physical_footprint: u64,
-    #[allow(dead_code)]
     pub compressed: u64,
-    #[allow(dead_code)]
     pub swapped_total: u64,
     pub swap_disk_est: u64,
     pub swap_disk: u64,
@@ -20,33 +18,31 @@ impl ProcessMemory {
     pub fn total(&self) -> u64 {
         self.physical_footprint + self.swap_disk
     }
-}
 
-pub fn scan_all_processes_optimized() -> Result<Vec<ProcessMemory>> {
-    // Try footprint optimized path
-    let footprint_map = crate::footprint::get_all_processes_footprint()?;
-
-    // If footprint works, we also need compressed from top
-    let compressed_map = crate::top::get_all_processes_compressed().unwrap_or_default();
-
-    let mut processes = Vec::new();
-
-    // Iterate over footprint map
-    for (pid, data) in footprint_map {
-        let compressed = *compressed_map.get(&pid).unwrap_or(&0);
-        let swap_disk = data.swapped_total.saturating_sub(compressed);
-
-        processes.push(ProcessMemory {
+    /// Creates a simple ProcessMemory from sysinfo data (RSS as placeholder for Phys).
+    /// Used for immediate "Fast Path" display.
+    pub fn new_simple(pid: i32, name: String, rss: u64) -> Self {
+        Self {
             pid,
-            name: data.name,
-            physical_footprint: data.physical_footprint,
-            compressed,
-            swapped_total: data.swapped_total,
-            swap_disk_est: swap_disk, // We use this as estimate
-            swap_disk,
-        });
+            name,
+            physical_footprint: rss, // Approximation for fast display
+            compressed: 0,
+            swapped_total: 0,
+            swap_disk_est: 0,
+            swap_disk: 0,
+        }
     }
-    Ok(processes)
+
+    /// Merges precise data from footprint into this struct.
+    pub fn merge_footprint(&mut self, footprint_data: &crate::footprint::FootprintData, compressed: u64) {
+        self.physical_footprint = footprint_data.physical_footprint;
+        self.swapped_total = footprint_data.swapped_total;
+        self.compressed = compressed;
+        
+        // Calculate swap estimates
+        self.swap_disk_est = self.swapped_total.saturating_sub(self.compressed);
+        self.swap_disk = self.swap_disk_est; // Initial value, will be normalized later
+    }
 }
 
 pub(crate) fn parse_size(size_str: &str) -> u64 {
@@ -82,6 +78,7 @@ pub(crate) fn format_size(bytes: u64) -> String {
     }
 }
 
+#[allow(dead_code)]
 pub fn get_process_memory(pid: i32, name: &str) -> Result<ProcessMemory> {
     let output = Command::new("vmmap")
         .arg("-summary")
@@ -90,8 +87,6 @@ pub fn get_process_memory(pid: i32, name: &str) -> Result<ProcessMemory> {
         .context("Failed to execute vmmap")?;
 
     if !output.status.success() {
-        // If vmmap fails (e.g. permission denied or process gone), return 0s or error.
-        // For now, let's just return 0s to avoid crashing the whole scan.
         return Ok(ProcessMemory {
             pid,
             name: name.to_string(),
@@ -121,14 +116,9 @@ fn parse_vmmap_output(pid: i32, name: &str, output: &str) -> Result<ProcessMemor
         RE_COMPRESSED.get_or_init(|| Regex::new(r"Compressed:\s+([\d\.]+)([KMG]?)").unwrap());
     let re_swap_used =
         RE_SWAP_USED.get_or_init(|| Regex::new(r"Swap used:\s+([\d\.]+)([KMG]?)").unwrap());
-    // Parse Writable regions line: "Writable regions: Total=803.6M written=512.8M(64%) resident=371.0M(46%) swapped_out=213.9M(27%)"
     let re_writable = RE_WRITABLE
         .get_or_init(|| Regex::new(r"Writable regions:.*swapped_out=([\d\.]+)([KMG]?)").unwrap());
 
-    // Match TOTAL line in REGION TYPE table: TOTAL ...
-    // Columns: VIRTUAL RESIDENT DIRTY SWAPPED ...
-    // We want capture group 2 (Resident) and 4 (Swapped)
-    // Regex: ^TOTAL\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)
     let re_total_table = RE_TOTAL_TABLE
         .get_or_init(|| Regex::new(r"^TOTAL\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)").unwrap());
     let re_total_table_minus_reserved = RE_TOTAL_TABLE_MINUS_RESERVED.get_or_init(|| {

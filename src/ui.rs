@@ -83,14 +83,14 @@ fn render_loading_status(f: &mut Frame, app: &mut App, area: Rect) {
             0
         };
 
-        let label = if let Some(name) = &app.current_scanning {
-            format!("Scanning {}/{} - {}", current, total, name)
+        let label = if let Some(msg) = &app.status_message {
+            msg.clone()
         } else {
-            format!("Scanning {}/{}", current, total)
+             format!("Scanning {}/{}", current, total)
         };
 
         let gauge = Gauge::default()
-            .block(Block::default().borders(Borders::ALL).title("Progress"))
+            .block(Block::default().borders(Borders::ALL).title("Quick Scan Progress"))
             .gauge_style(
                 Style::default()
                     .fg(Color::Cyan)
@@ -115,6 +115,11 @@ fn render_loading_status(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_idle_status(f: &mut Frame, app: &mut App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(30)])
+        .split(area);
+
     let summary = format!(
         "System Swap: {} | Total Swap: {} | Total Phys: {}",
         app.system_swap,
@@ -123,12 +128,39 @@ fn render_idle_status(f: &mut Frame, app: &mut App, area: Rect) {
     );
 
     let status = format!(
-        "{} | 'r': Refresh | 'q': Quit | 's': Swap | 'p': Phys | 'c': Comp | 't': Total | 'x': Kill",
+        "{} | 'r': Refresh | 'q': Quit | 's': Swap | 'p': Phys | 'c': Comp | 't': Total",
         summary
     );
 
     let p = Paragraph::new(status)
         .style(Style::default().fg(Color::White))
         .block(Block::default().borders(Borders::ALL).title("Status"));
-    f.render_widget(p, area);
+    f.render_widget(p, chunks[0]);
+    
+    // Deep scan progress or Idle indicator
+    if let Some((current, total)) = app.deep_scan_progress {
+         let percent = if total > 0 {
+            ((current as f64 / total as f64) * 100.0) as u16
+        } else {
+            0
+        };
+        let spinner_char = SPINNER[app.spinner_idx % SPINNER.len()];
+        let label = format!("{} Deep Analysis: {}%", spinner_char, percent);
+        
+        let gauge = Gauge::default()
+            .block(Block::default().borders(Borders::ALL).title("Deep Analysis"))
+            .gauge_style(
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::ITALIC),
+            )
+            .percent(percent)
+            .label(label);
+         f.render_widget(gauge, chunks[1]);
+    } else {
+        let p = Paragraph::new("Idle")
+            .style(Style::default().fg(Color::Green))
+            .block(Block::default().borders(Borders::ALL).title("Analysis"));
+        f.render_widget(p, chunks[1]);
+    }
 }

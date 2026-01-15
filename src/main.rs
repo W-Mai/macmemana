@@ -10,6 +10,7 @@ use std::{
     sync::mpsc,
     thread,
     time::{Duration, Instant},
+    collections::HashMap,
 };
 
 use anyhow::Result;
@@ -21,8 +22,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
-use rayon::prelude::*;
-use scanner::{ProcessMemory, format_size, get_process_memory};
+use scanner::{ProcessMemory, format_size};
 use sysinfo::System;
 
 #[derive(Parser, Debug)]
@@ -41,6 +41,9 @@ enum EventWrapper {
     Start(usize),            // Total processes
     Progress(usize, String), // Current count, current scanning name
     Result(ProcessMemory),   // Incremental result
+    BatchUpdate(HashMap<i32, (crate::footprint::FootprintData, u64)>), // Batch update with footprint & compressed
+    DeepScanStart(usize),    // Total items for deep scan
+    DeepScanProgress(usize), // Current items completed
     Complete,                // Done
 }
 
@@ -57,78 +60,57 @@ fn main() -> Result<()> {
 }
 
 fn run_cli(args: Args) -> Result<()> {
+    // CLI mode logic (kept simple for now, using optimized full scan if possible or fallback)
+    // For CLI, we might want to stick to the "all at once" approach or implement wait-for-deep-scan.
+    // Let's keep it blocking for CLI as user expects a report.
+    // But we need to use the new logic if we want consistency.
+    // Re-implementing a blocking version of the 2-stage scan for CLI:
+    
     let mut out = io::stdout().lock();
-    if let Err(e) = writeln!(out, "Scanning processes... This may take a while.") {
-        if e.kind() == io::ErrorKind::BrokenPipe {
-            return Ok(());
+    writeln!(out, "Scanning processes...")?;
+
+    // 1. Quick scan
+    let mut sys = System::new_all();
+    sys.refresh_all();
+    let mut processes: Vec<ProcessMemory> = sys
+        .processes()
+        .iter()
+        .map(|(pid, process)| {
+            ProcessMemory::new_simple(
+                pid.as_u32() as i32,
+                process.name().to_string(),
+                process.memory(),
+            )
+        })
+        .collect();
+
+    // 2. Deep scan
+    writeln!(out, "Performing deep analysis on {} processes...", processes.len())?;
+    
+    // Get compressed map first
+    let compressed_map = crate::top::get_all_processes_compressed().unwrap_or_default();
+    
+    let pids: Vec<i32> = processes.iter().map(|p| p.pid).collect();
+    let chunk_size = 50;
+    
+    // Process chunks
+    for chunk in pids.chunks(chunk_size) {
+        if let Ok(fp_map) = crate::footprint::get_footprint_for_pids(chunk) {
+             for p in &mut processes {
+                 if let Some(data) = fp_map.get(&p.pid) {
+                     let compressed = *compressed_map.get(&p.pid).unwrap_or(&0);
+                     p.merge_footprint(data, compressed);
+                 }
+             }
         }
-        return Err(e.into());
     }
-
-    let mut processes = if let Ok(procs) = scanner::scan_all_processes_optimized() {
-        if let Err(e) = writeln!(
-            out,
-            "Used optimized scan (footprint). Found {} processes.",
-            procs.len()
-        ) {
-            if e.kind() == io::ErrorKind::BrokenPipe {
-                return Ok(());
-            }
-            return Err(e.into());
-        }
-        procs
-    } else {
-        // Fallback
-        let mut sys = System::new_all();
-        sys.refresh_all();
-        let pids: Vec<(i32, String)> = sys
-            .processes()
-            .iter()
-            .map(|(pid, process)| (pid.as_u32() as i32, process.name().to_string()))
-            .collect();
-
-        if let Err(e) = writeln!(
-            out,
-            "Optimized scan failed (need root?). Falling back to vmmap. Found {} processes.",
-            pids.len()
-        ) {
-            if e.kind() == io::ErrorKind::BrokenPipe {
-                return Ok(());
-            }
-            return Err(e.into());
-        }
-
-        pids.par_iter()
-            .map(|(pid, name)| {
-                get_process_memory(*pid, name).unwrap_or_else(|_| ProcessMemory {
-                    pid: *pid,
-                    name: name.clone(),
-                    physical_footprint: 0,
-                    compressed: 0,
-                    swapped_total: 0,
-                    swap_disk_est: 0,
-                    swap_disk: 0,
-                })
-            })
-            .collect()
-    };
-
+    
     // Filter empty
     processes.retain(|p| p.total() > 0);
 
     let system_swap_str = get_system_swap().unwrap_or_else(|| String::from("0B"));
     let system_swap_bytes = scanner::parse_size(&system_swap_str);
-
-    // Only normalize if we fell back?
-    // Actually, optimized scan (footprint) also produces swap_disk_est = swapped - compressed.
-    // Does it match system swap? Not necessarily.
-    // If we trust footprint, maybe we skip normalization or keep it?
-    // Normalization ensures sum(process swap) == system swap.
-    // If footprint is accurate, maybe it matches?
-    // Let's keep normalization for consistency unless we are sure.
-    // But if footprint gives Swapped (Total) and Top gives Compressed, we derive Swap Disk.
-    // This derived Swap Disk might still not sum up perfectly to system swap due to shared pages etc.
-    // Normalization forces it to match system view. It's safer to keep it for "Disk Swap" column accuracy relative to system total.
+    
     normalize_process_swaps(&mut processes, system_swap_bytes);
 
     let sum_swap_bytes: u64 = processes.iter().map(|p| p.swap_disk).sum();
@@ -144,22 +126,17 @@ fn run_cli(args: Args) -> Result<()> {
         "{:<8} {:<30} {:<15} {:<15} {:<15}",
         "PID", "Name", "Physical", "Swap", "Total"
     ) {
-        if e.kind() == io::ErrorKind::BrokenPipe {
-            return Ok(());
-        }
+        if e.kind() == io::ErrorKind::BrokenPipe { return Ok(()); }
         return Err(e.into());
     }
 
     if let Err(e) = writeln!(out, "{}", "-".repeat(100)) {
-        if e.kind() == io::ErrorKind::BrokenPipe {
-            return Ok(());
-        }
+        if e.kind() == io::ErrorKind::BrokenPipe { return Ok(()); }
         return Err(e.into());
     }
 
     for p in &processes {
         if p.swap_disk > 0 || p.physical_footprint > 100 * 1024 * 1024 {
-            // Show if swapped > 0 or phys > 100MB
             if let Err(e) = writeln!(
                 out,
                 "{:<8} {:<30} {:<15} {:<15} {:<15}",
@@ -169,9 +146,7 @@ fn run_cli(args: Args) -> Result<()> {
                 format_size(p.swap_disk),
                 format_size(p.total())
             ) {
-                if e.kind() == io::ErrorKind::BrokenPipe {
-                    return Ok(());
-                }
+                if e.kind() == io::ErrorKind::BrokenPipe { return Ok(()); }
                 return Err(e.into());
             }
         }
@@ -183,9 +158,7 @@ fn run_cli(args: Args) -> Result<()> {
         format_size(sum_swap_bytes),
         format_size(sum_swap_bytes.abs_diff(system_swap_bytes))
     ) {
-        if e.kind() == io::ErrorKind::BrokenPipe {
-            return Ok(());
-        }
+        if e.kind() == io::ErrorKind::BrokenPipe { return Ok(()); }
         return Err(e.into());
     }
 
@@ -203,13 +176,10 @@ fn truncate(s: &str, max_width: usize) -> String {
 use std::process::Command;
 
 fn get_system_swap() -> Option<String> {
-    // sysctl vm.swapusage: vm.swapusage: total = 3072.00M  used = 1398.75M  free = 1673.25M  (encrypted)
     let output = Command::new("sysctl").arg("vm.swapusage").output().ok()?;
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // Parse "used = X"
-        // Regex or simple split
         if let Some(used_part) = stdout.split("used = ").nth(1)
             && let Some(val) = used_part.split_whitespace().next()
         {
@@ -220,31 +190,28 @@ fn get_system_swap() -> Option<String> {
 }
 
 fn run_tui() -> Result<()> {
-    // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Create app state
     let mut app = App::new();
 
-    // Setup communication channel
     let (tx, rx) = mpsc::channel();
     let tx_scan = tx.clone();
 
-    // Start initial scan in background
     thread::spawn(move || {
         perform_scan(tx_scan);
     });
+    
     app.is_loading = true;
     if let Some(s) = get_system_swap() {
         app.system_swap = s;
         app.system_swap_bytes = scanner::parse_size(&app.system_swap);
     }
 
-    let tick_rate = Duration::from_millis(100); // Faster tick for smooth animation
+    let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
 
     loop {
@@ -262,9 +229,9 @@ fn run_tui() -> Result<()> {
                     app.quit();
                 }
                 KeyCode::Char('r') => {
-                    if !app.is_loading {
+                    if !app.is_loading && app.deep_scan_progress.is_none() {
                         app.is_loading = true;
-                        app.processes.clear(); // Clear existing list on refresh
+                        app.processes.clear();
                         app.total_swap = 0;
                         app.total_phys = 0;
                         if let Some(s) = get_system_swap() {
@@ -301,12 +268,12 @@ fn run_tui() -> Result<()> {
                 }
                 KeyCode::Char('n') => {
                     app.sort_column = SortColumn::Name;
-                    app.sort_desc = false; // Name usually asc
+                    app.sort_desc = false;
                     app.sort();
                 }
                 KeyCode::Char('i') => {
                     app.sort_column = SortColumn::Pid;
-                    app.sort_desc = false; // PID usually asc
+                    app.sort_desc = false;
                     app.sort();
                 }
                 KeyCode::Char('x') => {
@@ -321,12 +288,11 @@ fn run_tui() -> Result<()> {
             last_tick = Instant::now();
         }
 
-        // Check for scan results
-        if let Ok(results) = rx.try_recv() {
-            match results {
+        while let Ok(event) = rx.try_recv() {
+            match event {
                 EventWrapper::Start(total) => {
                     app.scan_progress = Some((0, total));
-                    app.current_scanning = None;
+                    app.status_message = Some("Quick scanning...".to_string());
                 }
                 EventWrapper::Progress(current, name) => {
                     if let Some((_, total)) = app.scan_progress {
@@ -337,12 +303,28 @@ fn run_tui() -> Result<()> {
                 EventWrapper::Result(process) => {
                     app.add_process(process);
                 }
+                EventWrapper::DeepScanStart(total) => {
+                    app.is_loading = false; // Initial loading done
+                    app.scan_progress = None;
+                    app.deep_scan_progress = Some((0, total));
+                    app.status_message = Some(format!("Deep scanning 0/{}...", total));
+                }
+                EventWrapper::DeepScanProgress(current) => {
+                    if let Some((_, total)) = app.deep_scan_progress {
+                        app.deep_scan_progress = Some((current, total));
+                        app.status_message = Some(format!("Deep scanning {}/{}...", current, total));
+                    }
+                }
+                EventWrapper::BatchUpdate(updates) => {
+                    app.update_processes(updates);
+                }
                 EventWrapper::Complete => {
                     app.is_loading = false;
                     app.scan_progress = None;
+                    app.deep_scan_progress = None;
                     app.current_scanning = None;
+                    app.status_message = Some("Scan complete".to_string());
                     app.normalize_swap_to_system();
-                    // Final sort to be sure
                     app.sort();
                     if app.state.selected().is_none() && !app.processes.is_empty() {
                         app.state.select(Some(0));
@@ -356,7 +338,6 @@ fn run_tui() -> Result<()> {
         }
     }
 
-    // Restore terminal
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -368,58 +349,60 @@ fn run_tui() -> Result<()> {
     Ok(())
 }
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 fn perform_scan(tx: mpsc::Sender<EventWrapper>) {
-    // Try optimized scan (footprint + top)
-    if let Ok(processes) = scanner::scan_all_processes_optimized() {
-        let total = processes.len();
-        let _ = tx.send(EventWrapper::Start(total));
-        for (i, p) in processes.into_iter().enumerate() {
-            let _ = tx.send(EventWrapper::Progress(i + 1, p.name.clone()));
-            if p.total() > 0 {
-                let _ = tx.send(EventWrapper::Result(p));
-            }
-        }
-        let _ = tx.send(EventWrapper::Complete);
-        return;
-    }
-
+    // 1. Fast Path: Sysinfo
     let mut sys = System::new_all();
     sys.refresh_all();
-
-    // Get all PIDs
-    let pids: Vec<(i32, String)> = sys
+    
+    let pids: Vec<(i32, String, u64)> = sys
         .processes()
         .iter()
-        .map(|(pid, process)| (pid.as_u32() as i32, process.name().to_string()))
+        .map(|(pid, process)| (pid.as_u32() as i32, process.name().to_string(), process.memory()))
         .collect();
 
     let total = pids.len();
     let _ = tx.send(EventWrapper::Start(total));
-
-    let counter = Arc::new(AtomicUsize::new(0));
-
-    // Use rayon to parallelize vmmap calls
-    pids.par_iter().for_each(|(pid, name)| {
-        let current = counter.fetch_add(1, Ordering::Relaxed) + 1;
-        // Send progress update periodically or every time?
-        // Every time might overwhelm the channel/UI thread, let's try every 1 or 5.
-        // For smoother UI, every 1 is fine if main loop drains quickly.
-        let _ = tx.send(EventWrapper::Progress(current, name.clone()));
-
-        if let Ok(mem) = get_process_memory(*pid, name)
-            && mem.total() > 0
-        {
-            let _ = tx.send(EventWrapper::Result(mem));
+    
+    // Send initial results immediately
+    for (i, (pid, name, rss)) in pids.iter().enumerate() {
+        let _ = tx.send(EventWrapper::Progress(i + 1, name.clone()));
+        let p = ProcessMemory::new_simple(*pid, name.clone(), *rss);
+        let _ = tx.send(EventWrapper::Result(p));
+    }
+    
+    // 2. Deep Path: Footprint + Top
+    let _ = tx.send(EventWrapper::DeepScanStart(total));
+    
+    // Fetch compressed memory map once
+    let compressed_map = crate::top::get_all_processes_compressed().unwrap_or_default();
+    
+    let pid_list: Vec<i32> = pids.iter().map(|(pid, _, _)| *pid).collect();
+    let chunk_size = 30; // Batch size
+    let mut processed_count = 0;
+    
+    for chunk in pid_list.chunks(chunk_size) {
+        if let Ok(fp_map) = crate::footprint::get_footprint_for_pids(chunk) {
+            let mut updates = HashMap::new();
+            for pid in chunk {
+                if let Some(data) = fp_map.get(pid) {
+                    let compressed = *compressed_map.get(pid).unwrap_or(&0);
+                    updates.insert(*pid, (data.clone(), compressed));
+                }
+            }
+            if !updates.is_empty() {
+                let _ = tx.send(EventWrapper::BatchUpdate(updates));
+            }
         }
-    });
+        
+        processed_count += chunk.len();
+        let _ = tx.send(EventWrapper::DeepScanProgress(processed_count));
+    }
 
     let _ = tx.send(EventWrapper::Complete);
 }
 
 fn normalize_process_swaps(processes: &mut [ProcessMemory], system_swap_bytes: u64) {
+    // Same logic as before
     if system_swap_bytes == 0 || processes.is_empty() {
         return;
     }

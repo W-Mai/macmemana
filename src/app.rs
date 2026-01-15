@@ -1,5 +1,6 @@
 use crate::scanner::ProcessMemory;
 use ratatui::widgets::TableState;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SortColumn {
@@ -19,6 +20,8 @@ pub struct App {
     pub sort_desc: bool,
     pub is_loading: bool,
     pub scan_progress: Option<(usize, usize)>, // (current, total)
+    pub deep_scan_progress: Option<(usize, usize)>, // (current, total)
+    pub status_message: Option<String>,
     pub current_scanning: Option<String>,
     pub spinner_idx: usize,
     pub total_swap: u64,
@@ -37,6 +40,8 @@ impl App {
             sort_desc: true,
             is_loading: false,
             scan_progress: None,
+            deep_scan_progress: None,
+            status_message: None,
             current_scanning: None,
             spinner_idx: 0,
             total_swap: 0,
@@ -47,7 +52,7 @@ impl App {
     }
 
     pub fn on_tick(&mut self) {
-        if self.is_loading {
+        if self.is_loading || self.deep_scan_progress.is_some() {
             self.spinner_idx = (self.spinner_idx + 1) % 4; // 4 frames for basic spinner
         }
     }
@@ -106,14 +111,24 @@ impl App {
         self.total_swap += process.swap_disk;
         self.total_phys += process.physical_footprint;
         self.processes.push(process);
-        // Maybe sort every time? Or just every N times?
-        // Sorting every time might be too jumpy for UI if user is scrolling.
-        // But user asked for "incremental updates", so maybe we should.
-        // Let's sort but try to keep selection stable if possible (though tough with inserts)
-        // For now, let's just append and update totals, only sort at end or if user asks?
-        // Actually, if we don't sort, the list is random.
-        // Let's sort.
+        // Only sort occasionally or at end? No, sort immediately for now.
         self.sort();
+    }
+    
+    pub fn update_processes(&mut self, updates: HashMap<i32, (crate::footprint::FootprintData, u64)>) {
+        let mut updated = false;
+        
+        for p in &mut self.processes {
+            if let Some((fp_data, compressed)) = updates.get(&p.pid) {
+                p.merge_footprint(fp_data, *compressed);
+                updated = true;
+            }
+        }
+        
+        if updated {
+            self.normalize_swap_to_system();
+            self.sort();
+        }
     }
 
     pub fn normalize_swap_to_system(&mut self) {
