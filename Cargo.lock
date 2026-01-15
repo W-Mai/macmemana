@@ -424,13 +424,14 @@ dependencies = [
 
 [[package]]
 name = "macmemana"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytesize",
  "chrono",
  "clap",
  "crossterm",
+ "libc",
  "ratatui",
  "rayon",
  "regex",

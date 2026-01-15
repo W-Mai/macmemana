@@ -126,8 +126,19 @@ impl App {
         }
         
         if updated {
-            self.normalize_swap_to_system();
+            // Do NOT normalize yet during streaming update, just sort.
+            // Normalization happens only at the end to avoid skewing data with partial updates.
+            self.recalculate_totals();
             self.sort();
+        }
+    }
+    
+    fn recalculate_totals(&mut self) {
+        self.total_swap = 0;
+        self.total_phys = 0;
+        for p in &self.processes {
+            self.total_swap = self.total_swap.saturating_add(p.swap_disk);
+            self.total_phys = self.total_phys.saturating_add(p.physical_footprint);
         }
     }
 
@@ -206,12 +217,7 @@ impl App {
             }
         }
 
-        self.total_swap = 0;
-        self.total_phys = 0;
-        for p in &self.processes {
-            self.total_swap = self.total_swap.saturating_add(p.swap_disk);
-            self.total_phys = self.total_phys.saturating_add(p.physical_footprint);
-        }
+        self.recalculate_totals();
     }
 
     pub fn kill_selected(&mut self) {

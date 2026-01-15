@@ -17,7 +17,8 @@ struct FootprintProcess {
     #[serde(default)]
     footprint: u64,
     auxiliary: Option<FootprintAuxiliary>,
-    summary: Option<FootprintSummary>,
+    #[serde(default)]
+    categories: HashMap<String, FootprintCategory>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,12 +27,8 @@ struct FootprintAuxiliary {
 }
 
 #[derive(Debug, Deserialize)]
-struct FootprintSummary {
-    total: Option<FootprintTotal>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FootprintTotal {
+struct FootprintCategory {
+    #[serde(default)]
     swapped: u64,
 }
 
@@ -91,12 +88,9 @@ pub fn get_footprint_for_pids(pids: &[i32]) -> Result<HashMap<i32, FootprintData
             .as_ref()
             .map(|a| a.phys_footprint)
             .unwrap_or(p.footprint);
-        let swapped = p
-            .summary
-            .as_ref()
-            .and_then(|s| s.total.as_ref())
-            .map(|t| t.swapped)
-            .unwrap_or(0);
+            
+        // Calculate total swapped by summing 'swapped' from all categories
+        let swapped = p.categories.values().map(|c| c.swapped).sum();
 
         map.insert(
             p.pid,
