@@ -8,7 +8,7 @@ license = "MIT"
 repository = "https://github.com/W-Mai/macmemana"
 readme = "README.md"
 keywords = ["memory", "macos", "swap", "monitor", "tui"]
-categories = ["command-line-utilities", "system-tools"]
+categories = ["command-line-utilities", "os::macos-apis"]
 
 [dependencies]
 ratatui = "0.26"
