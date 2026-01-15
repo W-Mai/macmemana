@@ -105,4 +105,4 @@ sudo mma --cli --sort swap
 
 ## 📄 License
 
-MIT License © 2024 Benign X
+MIT License © 2026 Benign X
