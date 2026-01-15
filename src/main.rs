@@ -1,5 +1,7 @@
 mod app;
+mod footprint;
 mod scanner;
+mod top;
 mod ui;
 
 use std::{
@@ -63,47 +65,72 @@ fn run_cli(args: Args) -> Result<()> {
         return Err(e.into());
     }
 
-    // For CLI, we need a simple blocking scan, but maybe re-use logic?
-    // Let's just inline a simple scan here since perform_scan is async/channel based.
-    let mut sys = System::new_all();
-    sys.refresh_all();
-    let pids: Vec<(i32, String)> = sys
-        .processes()
-        .iter()
-        .map(|(pid, process)| (pid.as_u32() as i32, process.name().to_string()))
-        .collect();
-    let had_windowserver = pids.iter().any(|(_, name)| name.contains("WindowServer"));
-
-    if let Err(e) = writeln!(out, "Found {} processes. Starting scan...", pids.len()) {
-        if e.kind() == io::ErrorKind::BrokenPipe {
-            return Ok(());
+    let mut processes = if let Ok(procs) = scanner::scan_all_processes_optimized() {
+        if let Err(e) = writeln!(
+            out,
+            "Used optimized scan (footprint). Found {} processes.",
+            procs.len()
+        ) {
+            if e.kind() == io::ErrorKind::BrokenPipe {
+                return Ok(());
+            }
+            return Err(e.into());
         }
-        return Err(e.into());
-    }
+        procs
+    } else {
+        // Fallback
+        let mut sys = System::new_all();
+        sys.refresh_all();
+        let pids: Vec<(i32, String)> = sys
+            .processes()
+            .iter()
+            .map(|(pid, process)| (pid.as_u32() as i32, process.name().to_string()))
+            .collect();
 
-    let mut processes: Vec<ProcessMemory> = pids
-        .par_iter()
-        .map(|(pid, name)| {
-            get_process_memory(*pid, name).unwrap_or_else(|_| ProcessMemory {
-                pid: *pid,
-                name: name.clone(),
-                physical_footprint: 0,
-                compressed: 0,
-                swapped_total: 0,
-                swap_disk_est: 0,
-                swap_disk: 0,
+        if let Err(e) = writeln!(
+            out,
+            "Optimized scan failed (need root?). Falling back to vmmap. Found {} processes.",
+            pids.len()
+        ) {
+            if e.kind() == io::ErrorKind::BrokenPipe {
+                return Ok(());
+            }
+            return Err(e.into());
+        }
+
+        pids.par_iter()
+            .map(|(pid, name)| {
+                get_process_memory(*pid, name).unwrap_or_else(|_| ProcessMemory {
+                    pid: *pid,
+                    name: name.clone(),
+                    physical_footprint: 0,
+                    compressed: 0,
+                    swapped_total: 0,
+                    swap_disk_est: 0,
+                    swap_disk: 0,
+                })
             })
-        })
-        .filter(|p| p.total() > 0)
-        .collect();
+            .collect()
+    };
+
+    // Filter empty
+    processes.retain(|p| p.total() > 0);
 
     let system_swap_str = get_system_swap().unwrap_or_else(|| String::from("0B"));
     let system_swap_bytes = scanner::parse_size(&system_swap_str);
+
+    // Only normalize if we fell back?
+    // Actually, optimized scan (footprint) also produces swap_disk_est = swapped - compressed.
+    // Does it match system swap? Not necessarily.
+    // If we trust footprint, maybe we skip normalization or keep it?
+    // Normalization ensures sum(process swap) == system swap.
+    // If footprint is accurate, maybe it matches?
+    // Let's keep normalization for consistency unless we are sure.
+    // But if footprint gives Swapped (Total) and Top gives Compressed, we derive Swap Disk.
+    // This derived Swap Disk might still not sum up perfectly to system swap due to shared pages etc.
+    // Normalization forces it to match system view. It's safer to keep it for "Disk Swap" column accuracy relative to system total.
     normalize_process_swaps(&mut processes, system_swap_bytes);
-    let has_windowserver = processes.iter().any(|p| p.name.contains("WindowServer"));
-    if had_windowserver && !has_windowserver {
-        eprintln!("WindowServer not included (vmmap permission denied). Try: sudo macmemana --cli");
-    }
+
     let sum_swap_bytes: u64 = processes.iter().map(|p| p.swap_disk).sum();
 
     // Sort
@@ -262,6 +289,11 @@ fn run_tui() -> Result<()> {
                     app.sort_desc = true;
                     app.sort();
                 }
+                KeyCode::Char('c') => {
+                    app.sort_column = SortColumn::Compressed;
+                    app.sort_desc = true;
+                    app.sort();
+                }
                 KeyCode::Char('t') => {
                     app.sort_column = SortColumn::Total;
                     app.sort_desc = true;
@@ -340,6 +372,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn perform_scan(tx: mpsc::Sender<EventWrapper>) {
+    // Try optimized scan (footprint + top)
+    if let Ok(processes) = scanner::scan_all_processes_optimized() {
+        let total = processes.len();
+        let _ = tx.send(EventWrapper::Start(total));
+        for (i, p) in processes.into_iter().enumerate() {
+            let _ = tx.send(EventWrapper::Progress(i + 1, p.name.clone()));
+            if p.total() > 0 {
+                let _ = tx.send(EventWrapper::Result(p));
+            }
+        }
+        let _ = tx.send(EventWrapper::Complete);
+        return;
+    }
+
     let mut sys = System::new_all();
     sys.refresh_all();
 

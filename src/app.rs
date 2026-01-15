@@ -6,6 +6,7 @@ pub enum SortColumn {
     Pid,
     Name,
     Physical,
+    Compressed,
     Swap,
     Total,
 }
@@ -89,6 +90,7 @@ impl App {
                 SortColumn::Pid => a.pid.cmp(&b.pid),
                 SortColumn::Name => a.name.cmp(&b.name),
                 SortColumn::Physical => a.physical_footprint.cmp(&b.physical_footprint),
+                SortColumn::Compressed => a.compressed.cmp(&b.compressed),
                 SortColumn::Swap => a.swap_disk.cmp(&b.swap_disk),
                 SortColumn::Total => a.total().cmp(&b.total()),
             };

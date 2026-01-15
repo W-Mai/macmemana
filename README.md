@@ -55,6 +55,7 @@ Available sort options: `swap`, `phys` (physical footprint).
 | `k` / `↑` | Select previous process |
 | `s` | Sort by **Swap** (Descending) |
 | `p` | Sort by **Physical** Memory (Descending) |
+| `c` | Sort by **Compressed** Memory (Descending) |
 | `t` | Sort by **Total** Memory (Descending) |
 | `n` | Sort by **Name** (Ascending) |
 | `i` | Sort by **PID** (Ascending) |

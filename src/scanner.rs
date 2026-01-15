@@ -22,6 +22,33 @@ impl ProcessMemory {
     }
 }
 
+pub fn scan_all_processes_optimized() -> Result<Vec<ProcessMemory>> {
+    // Try footprint optimized path
+    let footprint_map = crate::footprint::get_all_processes_footprint()?;
+
+    // If footprint works, we also need compressed from top
+    let compressed_map = crate::top::get_all_processes_compressed().unwrap_or_default();
+
+    let mut processes = Vec::new();
+
+    // Iterate over footprint map
+    for (pid, data) in footprint_map {
+        let compressed = *compressed_map.get(&pid).unwrap_or(&0);
+        let swap_disk = data.swapped_total.saturating_sub(compressed);
+
+        processes.push(ProcessMemory {
+            pid,
+            name: data.name,
+            physical_footprint: data.physical_footprint,
+            compressed,
+            swapped_total: data.swapped_total,
+            swap_disk_est: swap_disk, // We use this as estimate
+            swap_disk,
+        });
+    }
+    Ok(processes)
+}
+
 pub(crate) fn parse_size(size_str: &str) -> u64 {
     let size_str = size_str.trim().to_uppercase();
     let (num_str, multiplier) = if size_str.ends_with('G') {

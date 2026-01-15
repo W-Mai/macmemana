@@ -25,7 +25,7 @@ fn render_table(f: &mut Frame, app: &mut App, area: Rect) {
         .add_modifier(Modifier::BOLD);
     let selected_style = Style::default().add_modifier(Modifier::REVERSED);
 
-    let header_cells = ["PID", "Name", "Physical", "Swap", "Total"]
+    let header_cells = ["PID", "Name", "Physical", "Compressed", "Swap", "Total"]
         .iter()
         .map(|h| Cell::from(*h).style(header_style));
     let header = Row::new(header_cells).height(1).bottom_margin(1);
@@ -35,6 +35,7 @@ fn render_table(f: &mut Frame, app: &mut App, area: Rect) {
             Cell::from(item.pid.to_string()),
             Cell::from(item.name.clone()),
             Cell::from(format_size(item.physical_footprint)),
+            Cell::from(format_size(item.compressed)),
             Cell::from(format_size(item.swap_disk)),
             Cell::from(format_size(item.total())),
         ];
@@ -44,10 +45,11 @@ fn render_table(f: &mut Frame, app: &mut App, area: Rect) {
     // Mark sorted column
     let widths = [
         Constraint::Length(8),
-        Constraint::Percentage(40),
-        Constraint::Percentage(20),
-        Constraint::Percentage(20),
-        Constraint::Percentage(20),
+        Constraint::Percentage(30),
+        Constraint::Percentage(15),
+        Constraint::Percentage(15),
+        Constraint::Percentage(15),
+        Constraint::Percentage(15),
     ];
 
     let t = Table::new(rows, widths)
@@ -121,7 +123,7 @@ fn render_idle_status(f: &mut Frame, app: &mut App, area: Rect) {
     );
 
     let status = format!(
-        "{} | 'r': Refresh | 'q': Quit | 's': Swap | 't': Total | 'x': Kill",
+        "{} | 'r': Refresh | 'q': Quit | 's': Swap | 'p': Phys | 'c': Comp | 't': Total | 'x': Kill",
         summary
     );
 
