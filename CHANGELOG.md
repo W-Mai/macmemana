@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-01-26
+
+### Fixed
+- **UI**: Fixed spinner animation logic to ensure smooth rotation.
+
 ## [0.3.0] - 2026-01-26
 
 ### Added
