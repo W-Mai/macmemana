@@ -70,8 +70,9 @@ impl App {
     }
 
     pub fn on_tick(&mut self) {
-        if self.is_loading || self.deep_scan_progress.is_some() {
-            self.spinner_idx = (self.spinner_idx + 1) % 4; // 4 frames for basic spinner
+        if self.is_loading || self.deep_scan_progress.is_some() || self.current_detail.is_none() && self.detail_view_open {
+             // Spin if loading, deep scanning, or fetching details
+            self.spinner_idx = self.spinner_idx.wrapping_add(1);
         }
     }
 
