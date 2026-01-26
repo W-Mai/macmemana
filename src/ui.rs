@@ -4,6 +4,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table},
 };
 
@@ -12,7 +13,7 @@ const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 pub fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .constraints([Constraint::Min(0), Constraint::Length(5)])
         .split(f.size());
 
     render_table(f, app, chunks[0]);
@@ -117,36 +118,99 @@ fn render_loading_status(f: &mut Frame, app: &mut App, area: Rect) {
 fn render_idle_status(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(30)])
+        .constraints([
+            Constraint::Percentage(35),
+            Constraint::Percentage(45),
+            Constraint::Percentage(20),
+        ])
         .split(area);
 
-    let summary = format!(
-        "System Swap: {} | Total Swap: {} | Total Phys: {}",
-        app.system_swap,
-        format_size(app.total_swap),
-        format_size(app.total_phys)
-    );
+    // 1. System Status
+    let sys_swap_color = if app.system_swap_bytes > 0 {
+        Color::Red
+    } else {
+        Color::Green
+    };
 
-    let status = format!(
-        "{} | 'r': Refresh | 'q': Quit | 's': Swap | 'p': Phys | 'c': Comp | 't': Total",
-        summary
-    );
+    let info_text = vec![
+        Line::from(vec![
+            Span::raw("System Swap: "),
+            Span::styled(
+                app.system_swap.clone(),
+                Style::default()
+                    .fg(sys_swap_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("Total Swap:  "),
+            Span::styled(
+                format_size(app.total_swap),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("Total Phys:  "),
+            Span::styled(
+                format_size(app.total_phys),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]),
+    ];
 
-    let p = Paragraph::new(status)
-        .style(Style::default().fg(Color::White))
-        .block(Block::default().borders(Borders::ALL).title("Status"));
-    f.render_widget(p, chunks[0]);
-    
-    // Deep scan progress or Idle indicator
+    let info_block = Paragraph::new(info_text)
+        .block(Block::default().borders(Borders::ALL).title("System Status"));
+    f.render_widget(info_block, chunks[0]);
+
+    // 2. Controls
+    let keys_style = Style::default()
+        .fg(Color::Green)
+        .add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(Color::Gray);
+
+    let controls_text = vec![
+        Line::from(vec![
+            Span::styled("R", keys_style),
+            Span::styled("efresh ", desc_style),
+            Span::styled("Q", keys_style),
+            Span::styled("uit ", desc_style),
+            Span::styled("X", keys_style),
+            Span::styled("Kill Selected", desc_style),
+        ]),
+        Line::from(vec![
+            Span::raw("Sort: "),
+            Span::styled("S", keys_style),
+            Span::styled("wap ", desc_style),
+            Span::styled("P", keys_style),
+            Span::styled("hys ", desc_style),
+            Span::styled("C", keys_style),
+            Span::styled("omp ", desc_style),
+        ]),
+        Line::from(vec![
+            Span::raw("      "), // indentation
+            Span::styled("T", keys_style),
+            Span::styled("otal ", desc_style),
+            Span::styled("N", keys_style),
+            Span::styled("ame ", desc_style),
+            Span::styled("I", keys_style),
+            Span::styled("PID ", desc_style),
+        ]),
+    ];
+
+    let controls_block = Paragraph::new(controls_text)
+        .block(Block::default().borders(Borders::ALL).title("Controls"));
+    f.render_widget(controls_block, chunks[1]);
+
+    // 3. Deep scan progress or Idle indicator
     if let Some((current, total)) = app.deep_scan_progress {
-         let percent = if total > 0 {
+        let percent = if total > 0 {
             ((current as f64 / total as f64) * 100.0) as u16
         } else {
             0
         };
         let spinner_char = SPINNER[app.spinner_idx % SPINNER.len()];
         let label = format!("{} Deep Analysis: {}%", spinner_char, percent);
-        
+
         let gauge = Gauge::default()
             .block(Block::default().borders(Borders::ALL).title("Deep Analysis"))
             .gauge_style(
@@ -156,11 +220,11 @@ fn render_idle_status(f: &mut Frame, app: &mut App, area: Rect) {
             )
             .percent(percent)
             .label(label);
-         f.render_widget(gauge, chunks[1]);
+        f.render_widget(gauge, chunks[2]);
     } else {
         let p = Paragraph::new("Idle")
             .style(Style::default().fg(Color::Green))
             .block(Block::default().borders(Borders::ALL).title("Analysis"));
-        f.render_widget(p, chunks[1]);
+        f.render_widget(p, chunks[2]);
     }
 }
