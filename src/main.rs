@@ -288,36 +288,35 @@ fn run_tui() -> Result<()> {
                 }
                 KeyCode::Char('R') => {
                      // Single process refresh
-                     if let Some(i) = app.state.selected() {
-                        if let Some(p) = app.processes.get(i) {
-                            let pid = p.pid;
-                            let name = p.name.clone();
-                            let tx = tx.clone();
-                            // Don't set full loading state, maybe just a spinner message?
-                            // app.status_message = Some(format!("Refreshing {}...", name));
-                            // Actually, let's just do it.
-                            thread::spawn(move || {
-                                if let Ok(pm) = scanner::get_process_memory(pid, &name) {
-                                    let _ = tx.send(EventWrapper::SingleResult(pm));
-                                }
-                            });
-                        }
+                     if let Some(i) = app.state.selected()
+                        && let Some(p) = app.processes.get(i)
+                     {
+                        let pid = p.pid;
+                        let name = p.name.clone();
+                        let tx = tx.clone();
+                        // Don't set full loading state, maybe just a spinner message?
+                        // app.status_message = Some(format!("Refreshing {}...", name));
+                        // Actually, let's just do it.
+                        thread::spawn(move || {
+                            if let Ok(pm) = scanner::get_process_memory(pid, &name) {
+                                let _ = tx.send(EventWrapper::SingleResult(pm));
+                            }
+                        });
                      }
                 }
                 KeyCode::Enter => {
-                    if !app.detail_view_open {
-                        if let Some(i) = app.state.selected() {
-                            if let Some(p) = app.processes.get(i) {
-                                app.detail_view_open = true;
-                                app.current_detail = None;
-                                let pid = p.pid;
-                                let name = p.name.clone();
-                                let tx = tx.clone();
-                                thread::spawn(move || {
-                                    fetch_details(pid, name, tx);
-                                });
-                            }
-                        }
+                    if !app.detail_view_open
+                        && let Some(i) = app.state.selected()
+                        && let Some(p) = app.processes.get(i)
+                    {
+                        app.detail_view_open = true;
+                        app.current_detail = None;
+                        let pid = p.pid;
+                        let name = p.name.clone();
+                        let tx = tx.clone();
+                        thread::spawn(move || {
+                            fetch_details(pid, name, tx);
+                        });
                     }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
