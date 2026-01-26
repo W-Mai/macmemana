@@ -1,6 +1,6 @@
 [package]
 name = "macmemana"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 authors = ["Benign X <1341398182@qq.com>"]
 description = "A terminal-based memory analysis tool for macOS with accurate swap accounting."

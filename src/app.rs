@@ -2,6 +2,20 @@ use crate::scanner::ProcessMemory;
 use ratatui::widgets::TableState;
 use std::collections::HashMap;
 
+#[derive(Debug, Clone)]
+pub struct ProcessDetails {
+    pub pid: i32,
+    pub name: String,
+    pub cmd: Vec<String>,
+    pub exe: String,
+    pub cwd: String,
+    // pub environ: Vec<String>,
+    pub status: String,
+    pub start_time: u64,
+    pub cpu_usage: f32,
+    pub memory_info: ProcessMemory,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SortColumn {
     Pid,
@@ -28,6 +42,8 @@ pub struct App {
     pub total_phys: u64,
     pub system_swap: String,
     pub system_swap_bytes: u64,
+    pub detail_view_open: bool,
+    pub current_detail: Option<ProcessDetails>,
 }
 
 impl App {
@@ -48,6 +64,8 @@ impl App {
             total_phys: 0,
             system_swap: String::from("Unknown"),
             system_swap_bytes: 0,
+            detail_view_open: false,
+            current_detail: None,
         }
     }
 
@@ -133,7 +151,7 @@ impl App {
         }
     }
     
-    fn recalculate_totals(&mut self) {
+    pub fn recalculate_totals(&mut self) {
         self.total_swap = 0;
         self.total_phys = 0;
         for p in &self.processes {

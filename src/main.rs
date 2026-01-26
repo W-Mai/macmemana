@@ -15,7 +15,7 @@ use std::{
 };
 
 use anyhow::Result;
-use app::{App, SortColumn};
+use app::{App, ProcessDetails, SortColumn};
 use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -24,7 +24,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use scanner::{ProcessMemory, format_size};
-use sysinfo::System;
+use sysinfo::{System, Pid};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -46,6 +46,8 @@ enum EventWrapper {
     DeepScanStart(usize),    // Total items for deep scan
     DeepScanProgress(usize), // Current items completed
     Complete,                // Done
+    SingleResult(ProcessMemory), // Single process refresh result
+    DetailResult(ProcessDetails), // Single process detail result
 }
 
 fn main() -> Result<()> {
@@ -156,8 +158,8 @@ fn run_cli(args: Args) -> Result<()> {
     }
 
     for p in &processes {
-        if p.swap_disk > 0 || p.physical_footprint > 100 * 1024 * 1024 {
-            if let Err(e) = writeln!(
+        if (p.swap_disk > 0 || p.physical_footprint > 100 * 1024 * 1024)
+            && let Err(e) = writeln!(
                 out,
                 "{:<8} {:<30} {:<15} {:<15} {:<15}",
                 p.pid,
@@ -165,10 +167,10 @@ fn run_cli(args: Args) -> Result<()> {
                 format_size(p.physical_footprint),
                 format_size(p.swap_disk),
                 format_size(p.total())
-            ) {
-                if e.kind() == io::ErrorKind::BrokenPipe { return Ok(()); }
-                return Err(e.into());
-            }
+            )
+        {
+            if e.kind() == io::ErrorKind::BrokenPipe { return Ok(()); }
+            return Err(e.into());
         }
     }
     if let Err(e) = writeln!(
@@ -246,10 +248,30 @@ fn run_tui() -> Result<()> {
         {
             match key.code {
                 KeyCode::Char('q') => {
-                    app.quit();
+                    if app.detail_view_open {
+                        app.detail_view_open = false;
+                    } else {
+                        app.quit();
+                    }
+                }
+                KeyCode::Esc => {
+                    if app.detail_view_open {
+                        app.detail_view_open = false;
+                    }
                 }
                 KeyCode::Char('r') => {
-                    if !app.is_loading && app.deep_scan_progress.is_none() {
+                    if app.detail_view_open {
+                         // Refresh details if open
+                         if let Some(detail) = &app.current_detail {
+                            let pid = detail.pid;
+                            let name = detail.name.clone();
+                            let tx = tx.clone();
+                            app.is_loading = true; // reusing spinner
+                            thread::spawn(move || {
+                                fetch_details(pid, name, tx);
+                            });
+                         }
+                    } else if !app.is_loading && app.deep_scan_progress.is_none() {
                         app.is_loading = true;
                         app.processes.clear();
                         app.total_swap = 0;
@@ -264,8 +286,50 @@ fn run_tui() -> Result<()> {
                         });
                     }
                 }
-                KeyCode::Down | KeyCode::Char('j') => app.next(),
-                KeyCode::Up | KeyCode::Char('k') => app.previous(),
+                KeyCode::Char('R') => {
+                     // Single process refresh
+                     if let Some(i) = app.state.selected() {
+                        if let Some(p) = app.processes.get(i) {
+                            let pid = p.pid;
+                            let name = p.name.clone();
+                            let tx = tx.clone();
+                            // Don't set full loading state, maybe just a spinner message?
+                            // app.status_message = Some(format!("Refreshing {}...", name));
+                            // Actually, let's just do it.
+                            thread::spawn(move || {
+                                if let Ok(pm) = scanner::get_process_memory(pid, &name) {
+                                    let _ = tx.send(EventWrapper::SingleResult(pm));
+                                }
+                            });
+                        }
+                     }
+                }
+                KeyCode::Enter => {
+                    if !app.detail_view_open {
+                        if let Some(i) = app.state.selected() {
+                            if let Some(p) = app.processes.get(i) {
+                                app.detail_view_open = true;
+                                app.current_detail = None;
+                                let pid = p.pid;
+                                let name = p.name.clone();
+                                let tx = tx.clone();
+                                thread::spawn(move || {
+                                    fetch_details(pid, name, tx);
+                                });
+                            }
+                        }
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if !app.detail_view_open {
+                        app.next();
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if !app.detail_view_open {
+                        app.previous();
+                    }
+                }
                 KeyCode::Char('s') => {
                     app.sort_column = SortColumn::Swap;
                     app.sort_desc = true;
@@ -350,6 +414,18 @@ fn run_tui() -> Result<()> {
                         app.state.select(Some(0));
                     }
                 }
+                EventWrapper::SingleResult(pm) => {
+                    // Find and update
+                    if let Some(idx) = app.processes.iter().position(|p| p.pid == pm.pid) {
+                        app.processes[idx] = pm;
+                        app.recalculate_totals();
+                        app.normalize_swap_to_system();
+                    }
+                }
+                EventWrapper::DetailResult(details) => {
+                    app.is_loading = false;
+                    app.current_detail = Some(details);
+                }
             }
         }
 
@@ -367,6 +443,45 @@ fn run_tui() -> Result<()> {
     terminal.show_cursor()?;
 
     Ok(())
+}
+
+fn fetch_details(pid: i32, name: String, tx: mpsc::Sender<EventWrapper>) {
+    // 1. Sysinfo for general info
+    let mut sys = System::new();
+    let sys_pid = Pid::from(pid as usize);
+    sys.refresh_process(sys_pid);
+    
+    if let Some(proc) = sys.process(sys_pid) {
+        let cmd = proc.cmd().to_vec();
+        let exe = proc.exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        let cwd = proc.cwd().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        // let _environ = proc.environ().to_vec();
+        let status = proc.status().to_string();
+        let start_time = proc.start_time();
+        let cpu_usage = proc.cpu_usage();
+        
+        // 2. Memory info
+        let memory_info = if let Ok(pm) = scanner::get_process_memory(pid, &name) {
+            pm
+        } else {
+             ProcessMemory::new_simple(pid, name.clone(), proc.memory())
+        };
+        
+        let details = ProcessDetails {
+            pid,
+            name,
+            cmd,
+            exe,
+            cwd,
+            // environ,
+            status,
+            start_time,
+            cpu_usage,
+            memory_info,
+        };
+        
+        let _ = tx.send(EventWrapper::DetailResult(details));
+    }
 }
 
 fn perform_scan(tx: mpsc::Sender<EventWrapper>) {
