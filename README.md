@@ -23,6 +23,10 @@
 
 **macmemana** (or simply `mma`) is a high-performance, terminal-based memory analyzer engineered specifically for macOS. Unlike generic tools, it leverages Apple's native `footprint` and `vmmap` utilities to demystify complex memory metrics—distinguishing between physical footprint, compressed memory, and actual swap usage with precision.
 
+<p align="center">
+  <img src="statics/snapshots_001.png" alt="macmemana screenshot" width="800"/>
+</p>
+
 ## ✨ Features
 
 - **🚀 Instant Startup**: Launches immediately with a lightweight scan, then progressively streams deep memory analysis in the background. No more staring at loading screens.
